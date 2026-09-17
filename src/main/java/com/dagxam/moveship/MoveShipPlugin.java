@@ -2,6 +2,7 @@ package com.dagxam.moveship;
 
 import com.dagxam.moveship.listeners.ShipControllerListener;
 import com.dagxam.moveship.listeners.ShipGUIListener;
+import com.dagxam.moveship.listeners.ShipMovementListener;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -25,8 +26,10 @@ public class MoveShipPlugin extends JavaPlugin {
 
         registerShipControllerRecipe();
 
+        // Регистрируем все слушатели, включая новый слушатель для WASD
         getServer().getPluginManager().registerEvents(new ShipControllerListener(), this);
         getServer().getPluginManager().registerEvents(new ShipGUIListener(), this);
+        getServer().getPluginManager().registerEvents(new ShipMovementListener(), this);
 
         getLogger().info("MoveShip плагин успешно запущен!");
     }
