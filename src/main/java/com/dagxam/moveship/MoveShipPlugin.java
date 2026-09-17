@@ -25,7 +25,6 @@ public class MoveShipPlugin extends JavaPlugin {
 
         registerShipControllerRecipe();
 
-        // Регистрируем оба слушателя событий
         getServer().getPluginManager().registerEvents(new ShipControllerListener(), this);
         getServer().getPluginManager().registerEvents(new ShipGUIListener(), this);
 
