@@ -1,6 +1,6 @@
-package com.yourname.moveship.listeners;
+package com.dagxam.moveship.listeners;
 
-import com.yourname.moveship.gui.ShipGUI;
+import com.dagxam.moveship.gui.ShipGUI;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Location;
