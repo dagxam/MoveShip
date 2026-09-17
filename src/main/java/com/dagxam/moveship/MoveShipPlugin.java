@@ -1,6 +1,7 @@
 package com.dagxam.moveship;
 
 import com.dagxam.moveship.listeners.ShipControllerListener;
+import com.dagxam.moveship.listeners.ShipGUIListener;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -16,19 +17,17 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 public class MoveShipPlugin extends JavaPlugin {
 
-    // Уникальный ключ NBT для идентификации кафедры корабля
     public static NamespacedKey CONTROLLER_KEY;
 
     @Override
     public void onEnable() {
-        // Инициализация уникального ключа (пространство имен плагина)
         CONTROLLER_KEY = new NamespacedKey(this, "ship_controller");
 
-        // Регистрируем рецепт крафта
         registerShipControllerRecipe();
 
-        // Регистрируем слушатель событий (блоки и клики)
+        // Регистрируем оба слушателя событий
         getServer().getPluginManager().registerEvents(new ShipControllerListener(), this);
+        getServer().getPluginManager().registerEvents(new ShipGUIListener(), this);
 
         getLogger().info("MoveShip плагин успешно запущен!");
     }
@@ -43,19 +42,14 @@ public class MoveShipPlugin extends JavaPlugin {
         ItemMeta meta = controllerItem.getItemMeta();
         
         if (meta != null) {
-            // Paper использует Adventure API для цвета и текста
             meta.displayName(Component.text("Кафедра управления", NamedTextColor.GOLD));
-            
-            // Сохраняем NBT тег прямо в предмет
             meta.getPersistentDataContainer().set(CONTROLLER_KEY, PersistentDataType.BYTE, (byte) 1);
             controllerItem.setItemMeta(meta);
         }
 
-        // Создаем рецепт
         NamespacedKey recipeKey = new NamespacedKey(this, "ship_controller_recipe");
         ShapedRecipe recipe = new ShapedRecipe(recipeKey, controllerItem);
         
-        // Матрица 3x2: P - любые доски, L - любые бревна
         recipe.shape("PPP", "LLL");
         recipe.setIngredient('P', new RecipeChoice.MaterialChoice(Tag.PLANKS));
         recipe.setIngredient('L', new RecipeChoice.MaterialChoice(Tag.LOGS));
