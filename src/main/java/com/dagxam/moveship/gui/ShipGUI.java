@@ -18,29 +18,24 @@ import java.util.List;
 public class ShipGUI implements InventoryHolder {
 
     private final Inventory inventory;
-    private final Location coreLocation; // Координаты нашей кафедры управления
+    private final Location coreLocation;
 
     public ShipGUI(Location coreLocation) {
         this.coreLocation = coreLocation;
-        // Создаем инвентарь в 1 строку (9 слотов)
         this.inventory = Bukkit.createInventory(this, 9, Component.text("Управление кораблем", NamedTextColor.DARK_GRAY));
         initializeItems();
     }
 
     private void initializeItems() {
-        // Слот 0: Сканировать (Компас)
         inventory.setItem(0, createGuiItem(Material.COMPASS, "Сканировать", NamedTextColor.AQUA, 
                 "Найти все связанные блоки корабля."));
         
-        // Слот 3: Активировать (Зеленая шерсть)
         inventory.setItem(3, createGuiItem(Material.LIME_WOOL, "Активировать", NamedTextColor.GREEN, 
                 "Перевести корабль в режим движения."));
         
-        // Слот 5: Остановить (Красная шерсть)
         inventory.setItem(5, createGuiItem(Material.RED_WOOL, "Остановить", NamedTextColor.RED, 
                 "Остановить корабль и зафиксировать блоки."));
         
-        // Слот 8: Выход (Барьер)
         inventory.setItem(8, createGuiItem(Material.BARRIER, "Выход", NamedTextColor.DARK_RED, 
                 "Закрыть меню."));
     }
@@ -49,7 +44,6 @@ public class ShipGUI implements InventoryHolder {
         ItemStack item = new ItemStack(material);
         ItemMeta meta = item.getItemMeta();
         if (meta != null) {
-            // Убираем стандартный наклонный шрифт (курсив) у предметов
             meta.displayName(Component.text(name, color).decoration(TextDecoration.ITALIC, false));
             meta.lore(List.of(
                     Component.text(loreText, NamedTextColor.GRAY).decoration(TextDecoration.ITALIC, false)
@@ -68,7 +62,6 @@ public class ShipGUI implements InventoryHolder {
         return coreLocation;
     }
 
-    // Удобный статический метод для открытия меню
     public static void open(Player player, Location coreLocation) {
         ShipGUI gui = new ShipGUI(coreLocation);
         player.openInventory(gui.getInventory());
