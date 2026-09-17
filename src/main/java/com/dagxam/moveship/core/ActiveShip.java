@@ -30,20 +30,17 @@ public class ActiveShip {
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
 
     private static final double SPEED = 0.3;
-    private static final float ROTATION_SPEED = 3.0f; // Градусов за тик
+    private static final float ROTATION_SPEED = 3.0f;
 
-    // Отслеживаем текущий угол поворота корпуса корабля (от 0 до 360)
     private float currentShipYaw = 0f;
 
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot = pilot;
 
-        // Определяем математический центр кафедры как точку вращения
         Location gridAnchorCenter = anchorLocation.getBlock().getLocation().add(0.5, 0.0, 0.5);
 
-        // Создаем невидимое кресло пилота
         Location seatLoc = gridAnchorCenter.clone().add(0, 0.2, 0);
-        seatLoc.setYaw(pilot.getLocation().getYaw()); // Пилот смотрит туда же, куда смотрел
+        seatLoc.setYaw(pilot.getLocation().getYaw());
         
         this.coreEntity = (ArmorStand) seatLoc.getWorld().spawnEntity(seatLoc, EntityType.ARMOR_STAND);
         this.coreEntity.setInvisible(true);
@@ -52,10 +49,7 @@ public class ActiveShip {
         this.coreEntity.setSmall(true);
 
         for (Block block : blocks) {
-            // Берем координаты центра каждого блока
             Location blockCenter = block.getLocation().add(0.5, 0.0, 0.5);
-            
-            // Вектор смещения относительно центра вращения
             Vector offset = blockCenter.toVector().subtract(gridAnchorCenter.toVector());
 
             BlockState snapshot = block.getState();
@@ -70,9 +64,8 @@ public class ActiveShip {
 
             BlockDisplay display = (BlockDisplay) gridAnchorCenter.getWorld().spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
             display.setBlock(snapshot.getBlockData());
-            display.setTeleportDuration(2); // Плавная интерполяция движения
+            display.setTeleportDuration(2);
 
-            // ВАЖНО: Смещаем визуальный центр (пивот) блока в его середину, иначе он будет крутиться вокруг угла
             Transformation transform = new Transformation(
                     new Vector3f(-0.5f, 0f, -0.5f), 
                     new AxisAngle4f(0, 0, 1, 0), 
@@ -87,14 +80,46 @@ public class ActiveShip {
         this.coreEntity.addPassenger(pilot);
     }
 
+    // СИСТЕМА КОЛЛИЗИИ: Проверяет, можно ли сдвинуть корабль в новую точку
+    private boolean canMove(Location targetCoreLoc, float targetYaw) {
+        Location targetAnchorCenter = targetCoreLoc.clone().subtract(0, 0.2, 0);
+        
+        double rad = Math.toRadians(targetYaw);
+        double cos = Math.cos(rad);
+        double sin = Math.sin(rad);
+
+        for (ShipBlockData data : originalBlocks) {
+            Vector offset = data.getRelativeOffset();
+
+            // Вычисляем будущие координаты каждого блока
+            double newX = offset.getX() * cos - offset.getZ() * sin;
+            double newZ = offset.getX() * sin + offset.getZ() * cos;
+
+            Location targetBlockLoc = targetAnchorCenter.clone().add(newX, offset.getY(), newZ);
+            Block targetWorldBlock = targetBlockLoc.getBlock();
+
+            // Если блок твердый (камень, земля, дерево) — отменяем движение.
+            // Вода, воздух, высокая трава пропустят корабль.
+            if (targetWorldBlock.getType().isSolid()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     public void move(float forwardParams) {
         if (forwardParams == 0) return;
 
         Vector direction = coreEntity.getLocation().getDirection().normalize();
         direction.multiply(forwardParams > 0 ? SPEED : -SPEED);
 
-        coreEntity.teleport(coreEntity.getLocation().add(direction));
-        updateDisplayEntities();
+        Location targetLocation = coreEntity.getLocation().add(direction);
+
+        // Перед тем как сдвинуть, проверяем препятствия!
+        if (canMove(targetLocation, currentShipYaw)) {
+            coreEntity.teleport(targetLocation);
+            updateDisplayEntities();
+        }
     }
 
     public void rotate(float sideParams) {
@@ -102,23 +127,23 @@ public class ActiveShip {
 
         float yawChange = sideParams > 0 ? ROTATION_SPEED : -ROTATION_SPEED;
         
-        // Меняем угол самого корабля
-        currentShipYaw = (currentShipYaw + yawChange) % 360;
-        if (currentShipYaw < 0) currentShipYaw += 360;
+        float targetShipYaw = (currentShipYaw + yawChange) % 360;
+        if (targetShipYaw < 0) targetShipYaw += 360;
 
-        // Поворачиваем камеру пилота
-        Location loc = coreEntity.getLocation();
-        loc.setYaw(loc.getYaw() + yawChange);
-        coreEntity.teleport(loc);
-        
-        updateDisplayEntities();
+        Location targetLocation = coreEntity.getLocation().clone();
+        targetLocation.setYaw(targetLocation.getYaw() + yawChange);
+
+        // Перед тем как повернуть корпус, проверяем, не заденет ли он стену!
+        if (canMove(coreEntity.getLocation(), targetShipYaw)) {
+            currentShipYaw = targetShipYaw;
+            coreEntity.teleport(targetLocation);
+            updateDisplayEntities();
+        }
     }
 
-    // МАТЕМАТИКА ВРАЩЕНИЯ: Перерасчет координат всех блоков
     private void updateDisplayEntities() {
         Location anchorCenter = coreEntity.getLocation().clone().subtract(0, 0.2, 0);
         
-        // Переводим градусы в радианы для тригонометрии
         double rad = Math.toRadians(currentShipYaw);
         double cos = Math.cos(rad);
         double sin = Math.sin(rad);
@@ -129,13 +154,10 @@ public class ActiveShip {
             
             Vector offset = data.getRelativeOffset();
 
-            // Формула 2D-вращения для координат Minecraft (где X=Восток, Z=Юг)
             double newX = offset.getX() * cos - offset.getZ() * sin;
             double newZ = offset.getX() * sin + offset.getZ() * cos;
 
             Location newLoc = anchorCenter.clone().add(newX, offset.getY(), newZ);
-            
-            // Вращаем сам блок
             newLoc.setYaw(currentShipYaw);
             
             display.teleport(newLoc);
@@ -145,7 +167,6 @@ public class ActiveShip {
     public void restoreBlocks() {
         coreEntity.removePassenger(pilot);
 
-        // 1. Привязка к сетке блоков (округляем координаты)
         Location currentAnchor = coreEntity.getLocation().subtract(0, 0.2, 0);
         Location gridAnchor = new Location(
                 currentAnchor.getWorld(),
@@ -156,13 +177,12 @@ public class ActiveShip {
 
         coreEntity.remove();
 
-        // 2. Округление угла до ближайших 90 градусов (0, 90, 180, 270)
         int snappedYaw = Math.round(currentShipYaw / 90.0f) * 90;
         snappedYaw = (snappedYaw % 360 + 360) % 360;
-        int rotations = snappedYaw / 90; // Количество поворотов на 90 градусов вправо
+        int rotations = snappedYaw / 90;
 
         double rad = Math.toRadians(snappedYaw);
-        double cos = Math.round(Math.cos(rad)); // Используем round для идеальных 1, 0, -1
+        double cos = Math.round(Math.cos(rad));
         double sin = Math.round(Math.sin(rad));
 
         for (int i = 0; i < displayEntities.size(); i++) {
@@ -173,7 +193,6 @@ public class ActiveShip {
 
             Vector offset = data.getRelativeOffset();
 
-            // Пересчитываем координаты с учетом выровненного угла
             int dx = (int) Math.round(offset.getX() * cos - offset.getZ() * sin);
             int dz = (int) Math.round(offset.getX() * sin + offset.getZ() * cos);
             int dy = offset.getBlockY();
@@ -181,7 +200,6 @@ public class ActiveShip {
             Block newBlock = gridAnchor.clone().add(dx, dy, dz).getBlock();
             BlockData blockData = data.getBlockData().clone();
 
-            // 3. Вращение лицевой стороны блоков (сундуки, ступеньки)
             if (blockData instanceof Directional directional) {
                 BlockFace face = directional.getFacing();
                 for (int r = 0; r < rotations; r++) {
@@ -189,15 +207,14 @@ public class ActiveShip {
                 }
                 directional.setFacing(face);
             } 
-            // Вращение бревен
             else if (blockData instanceof Orientable orientable) {
-                if (rotations % 2 != 0) { // Если корабль повернут на 90 или 270
+                if (rotations % 2 != 0) {
                     if (orientable.getAxis() == Axis.X) orientable.setAxis(Axis.Z);
                     else if (orientable.getAxis() == Axis.Z) orientable.setAxis(Axis.X);
                 }
             }
 
-            // Устанавливаем блок и восстанавливаем инвентарь
+            // Возвращаем блок (если там была трава или вода - они заменятся кораблем)
             newBlock.setBlockData(blockData, false);
 
             if (data.getStateSnapshot() instanceof Container oldContainer) {
@@ -209,7 +226,6 @@ public class ActiveShip {
         }
     }
 
-    // Хелпер для поворота блоков (на 90 градусов по часовой стрелке)
     private BlockFace rotateFaceRight(BlockFace face) {
         return switch (face) {
             case NORTH -> BlockFace.EAST;
