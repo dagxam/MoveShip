@@ -35,7 +35,6 @@ public class ShipGUIListener implements Listener {
                     break;
                     
                 case 3: // Активировать
-                    // Сначала быстро сканируем корабль снова, чтобы убедиться, что данные свежие
                     Set<Block> blocksToActivate = ShipScanner.scanShip(coreLoc);
                     
                     if (blocksToActivate.isEmpty()) {
@@ -54,8 +53,12 @@ public class ShipGUIListener implements Listener {
                     break;
                     
                 case 5: // Остановить
-                    player.sendMessage(Component.text("Корабль остановлен.", NamedTextColor.RED));
-                    // TODO: Вызвать метод деактивации и возвращения блоков
+                    if (ShipManager.getShip(player) != null) {
+                        ShipManager.stopShip(player);
+                        player.sendMessage(Component.text("Корабль успешно остановлен и зафиксирован.", NamedTextColor.GREEN));
+                    } else {
+                        player.sendMessage(Component.text("Вы не управляете кораблем!", NamedTextColor.RED));
+                    }
                     player.closeInventory();
                     break;
                     
