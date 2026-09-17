@@ -14,7 +14,7 @@ public class ShipManager {
 
     public static boolean activateShip(Player player, Location coreLocation, Set<Block> shipBlocks) {
         if (activeShips.containsKey(player)) {
-            return false; // Игрок уже управляет кораблем
+            return false;
         }
         
         ActiveShip ship = new ActiveShip(shipBlocks, coreLocation, player);
@@ -26,7 +26,10 @@ public class ShipManager {
         return activeShips.get(player);
     }
 
-    public static void removeShip(Player player) {
-        activeShips.remove(player);
+    public static void stopShip(Player player) {
+        ActiveShip ship = activeShips.remove(player);
+        if (ship != null) {
+            ship.restoreBlocks();
+        }
     }
 }
