@@ -32,33 +32,32 @@ public class ShipMovementListener implements Listener {
 
                 if (ship == null) return;
 
-                float sideVal = 0;
                 float forwardVal = 0;
+                float sideVal = 0;
 
                 try {
-                    // Старый формат
                     sideVal = event.getPacket().getFloat().read(0);
                     forwardVal = event.getPacket().getFloat().read(1);
                 } catch (Exception e) {
-                    // Новый формат (1.20.6+)
-                    Object inputObj = event.getPacket().getModifier().read(0);
-                    if (inputObj != null) {
-                        String inputStr = inputObj.toString();
-                        
-                        boolean forward = inputStr.contains("forward=true");
-                        boolean backward = inputStr.contains("backward=true");
-                        boolean left = inputStr.contains("left=true");
-                        boolean right = inputStr.contains("right=true");
-
-                        forwardVal = (forward ? 1.0f : 0.0f) + (backward ? -1.0f : 0.0f);
-                        sideVal = (left ? 1.0f : 0.0f) + (right ? -1.0f : 0.0f);
+                    // Парсинг нового формата Minecraft (1.20.6 / 1.21)
+                    boolean fwd = false, bwd = false, l = false, r = false;
+                    for (Object obj : event.getPacket().getModifier().getValues()) {
+                        if (obj != null) {
+                            String str = obj.toString();
+                            if (str.contains("forward=true")) fwd = true;
+                            if (str.contains("backward=true")) bwd = true;
+                            if (str.contains("left=true")) l = true;
+                            if (str.contains("right=true")) r = true;
+                        }
                     }
+                    forwardVal = (fwd ? 1.0f : 0.0f) + (bwd ? -1.0f : 0.0f);
+                    sideVal = (l ? 1.0f : 0.0f) + (r ? -1.0f : 0.0f);
                 }
 
                 final float finalForward = forwardVal;
                 final float finalSide = sideVal;
 
-                // Передаем текущее состояние кнопок (зажато или отпущено) в ядро корабля
+                // Передаем текущее состояние кнопок (даже если это нули, чтобы мотор остановился)
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     ship.setInput(finalForward, finalSide);
                 });
