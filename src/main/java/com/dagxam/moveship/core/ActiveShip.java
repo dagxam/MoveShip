@@ -2,86 +2,70 @@ package com.dagxam.moveship.core;
 
 import org.bukkit.Location;
 import org.bukkit.Material;
-import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Container;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.BlockDisplay;
+import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
-import org.bukkit.inventory.ItemStack;
+import org.bukkit.util.Vector;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
 public class ActiveShip {
-    
     private final Player pilot;
-    private final ArmorStand vehicle;
-    private final List<BlockDisplay> displays = new ArrayList<>();
+    private final ArmorStand coreEntity; // Невидимое сиденье для игрока
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
+    private final List<BlockDisplay> displayEntities = new ArrayList<>();
 
-    public ActiveShip(Player pilot, Location coreLocation, Set<Block> blocks) {
+    public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot = pilot;
-        World world = coreLocation.getWorld();
 
-        // 1. Создаем невидимое ядро, на котором будет сидеть игрок (ArmorStand)
-        // Смещаем на 0.5, чтобы ядро было ровно по центру блока
-        Location spawnLoc = coreLocation.clone().add(0.5, 0, 0.5);
-        this.vehicle = world.spawn(spawnLoc, ArmorStand.class, stand -> {
-            stand.setInvisible(true);
-            stand.setInvulnerable(true);
-            stand.setGravity(false);
-            stand.setMarker(true); // Чтобы не мешал кликать мышкой
-            stand.setSmall(true);
-        });
+        // 1. Создаем "ядро" корабля (кресло пилота) прямо по центру кафедры
+        Location coreLoc = anchorLocation.clone().add(0.5, 0, 0.5);
+        this.coreEntity = (ArmorStand) anchorLocation.getWorld().spawnEntity(coreLoc, EntityType.ARMOR_STAND);
+        this.coreEntity.setInvisible(true);
+        this.coreEntity.setInvulnerable(true);
+        this.coreEntity.setGravity(false);
+        this.coreEntity.setSmall(true); // Чтобы игрок сидел ниже, ближе к полу
 
-        // Сажаем пилота на ядро (теперь он не может ходить, но может крутить камерой)
-        this.vehicle.addPassenger(pilot);
-
-        // 2. Обрабатываем каждый отсканированный блок
+        // 2. Обрабатываем каждый блок
         for (Block block : blocks) {
             Location blockLoc = block.getLocation();
-            BlockState state = block.getState();
-            ItemStack[] savedItems = null;
+            
+            // Вектор смещения относительно кафедры (чтобы при остановке собрать обратно)
+            Vector offset = blockLoc.toVector().subtract(anchorLocation.toVector());
 
-            // Если это сундук, печь или бочка
-            if (state instanceof Container container) {
-                ItemStack[] originalItems = container.getInventory().getContents();
-                savedItems = new ItemStack[originalItems.length];
-                
-                // Аккуратно копируем предметы в память
-                for (int i = 0; i < originalItems.length; i++) {
-                    if (originalItems[i] != null) {
-                        savedItems[i] = originalItems[i].clone();
-                    }
-                }
-                // Очищаем реальный сундук, чтобы при удалении блока вещи не выпали на землю
+            // ДЕЛАЕМ СЛЕПОК: Сохраняет инвентари, текст на табличках и т.д.
+            BlockState snapshot = block.getState();
+            originalBlocks.add(new ShipBlockData(offset, block.getBlockData(), snapshot));
+
+            // ПРЕДОТВРАЩЕНИЕ ДРОПА: Если это сундук/печь, удаляем вещи в мире ДО разрушения блока
+            BlockState stateToClear = block.getState();
+            if (stateToClear instanceof Container container) {
                 container.getInventory().clear();
+                container.update(true, false); // Применяем очистку без обновления физики
             }
 
-            // Вычисляем смещение относительно кафедры
-            int offsetX = blockLoc.getBlockX() - coreLocation.getBlockX();
-            int offsetY = blockLoc.getBlockY() - coreLocation.getBlockY();
-            int offsetZ = blockLoc.getBlockZ() - coreLocation.getBlockZ();
-
-            // Сохраняем все данные в наш класс
-            originalBlocks.add(new ShipBlockData(block.getBlockData(), savedItems, offsetX, offsetY, offsetZ));
-
-            // 3. Создаем визуальную сущность BlockDisplay
-            BlockDisplay display = world.spawn(blockLoc.clone().add(0.5, 0, 0.5), BlockDisplay.class, d -> {
-                d.setBlock(block.getBlockData());
-            });
-            displays.add(display);
-
-            // 4. Удаляем физический блок из мира (false означает "без дропа предметов")
+            // Удаляем физический блок
             block.setType(Material.AIR, false);
+
+            // Спавним визуальную копию (BlockDisplay)
+            BlockDisplay display = (BlockDisplay) anchorLocation.getWorld().spawnEntity(blockLoc, EntityType.BLOCK_DISPLAY);
+            display.setBlock(snapshot.getBlockData());
+            displayEntities.add(display);
         }
+
+        // 3. Сажаем пилота на корабль
+        this.coreEntity.addPassenger(pilot);
     }
 
-    public Player getPilot() { return pilot; }
-    public ArmorStand getVehicle() { return vehicle; }
-    public List<BlockDisplay> getDisplays() { return displays; }
-    public List<ShipBlockData> getOriginalBlocks() { return originalBlocks; }
+    public Player getPilot() {
+        return pilot;
+    }
+    
+    // Позже мы добавим сюда методы move() и stop()
 }
