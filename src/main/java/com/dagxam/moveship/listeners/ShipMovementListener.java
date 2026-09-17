@@ -36,16 +36,15 @@ public class ShipMovementListener implements Listener {
                 float forwardVal = 0;
 
                 try {
-                    // Старый формат (до 1.20.4): чтение Float значений напрямую
+                    // Старый формат
                     sideVal = event.getPacket().getFloat().read(0);
                     forwardVal = event.getPacket().getFloat().read(1);
                 } catch (Exception e) {
-                    // Новый формат (1.20.6 / 1.21+): чтение объекта Input Record
+                    // Новый формат (1.20.6+)
                     Object inputObj = event.getPacket().getModifier().read(0);
                     if (inputObj != null) {
                         String inputStr = inputObj.toString();
                         
-                        // Парсим флаги нажатий из строкового представления Record объекта
                         boolean forward = inputStr.contains("forward=true");
                         boolean backward = inputStr.contains("backward=true");
                         boolean left = inputStr.contains("left=true");
@@ -56,20 +55,12 @@ public class ShipMovementListener implements Listener {
                     }
                 }
 
-                // Копируем финальные значения (эффект замыкания для лямбды)
                 final float finalForward = forwardVal;
                 final float finalSide = sideVal;
 
-                // Если игрок ничего не нажал, прерываем
-                if (finalForward == 0 && finalSide == 0) return;
-
+                // Передаем текущее состояние кнопок (зажато или отпущено) в ядро корабля
                 Bukkit.getScheduler().runTask(plugin, () -> {
-                    if (finalForward != 0) {
-                        ship.move(finalForward);
-                    }
-                    if (finalSide != 0) {
-                        ship.rotate(finalSide);
-                    }
+                    ship.setInput(finalForward, finalSide);
                 });
             }
         });
