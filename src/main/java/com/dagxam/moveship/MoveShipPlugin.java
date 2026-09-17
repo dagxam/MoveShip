@@ -24,12 +24,20 @@ public class MoveShipPlugin extends JavaPlugin {
     public void onEnable() {
         CONTROLLER_KEY = new NamespacedKey(this, "ship_controller");
 
+        // Проверяем, установлен ли ProtocolLib на сервере
+        if (getServer().getPluginManager().getPlugin("ProtocolLib") == null) {
+            getLogger().severe("Для работы плагина необходим ProtocolLib! Плагин отключается.");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+
         registerShipControllerRecipe();
 
-        // Регистрируем все слушатели, включая новый слушатель для WASD
         getServer().getPluginManager().registerEvents(new ShipControllerListener(), this);
         getServer().getPluginManager().registerEvents(new ShipGUIListener(), this);
-        getServer().getPluginManager().registerEvents(new ShipMovementListener(), this);
+        
+        // Инициализируем наш слушатель пакетов WASD
+        new ShipMovementListener(this);
 
         getLogger().info("MoveShip плагин успешно запущен!");
     }
