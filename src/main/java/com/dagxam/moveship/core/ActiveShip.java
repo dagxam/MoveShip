@@ -21,14 +21,20 @@ public class ActiveShip {
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
 
+    // Скорость движения (блоков за тик)
+    private static final double SPEED = 0.3;
+    // Скорость поворота (в градусах)
+    private static final float ROTATION_SPEED = 3.0f;
+
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot = pilot;
-
-        // Строгая привязка к сетке блоков
         Location gridAnchor = anchorLocation.getBlock().getLocation();
 
-        // Создаем невидимое сиденье по центру блока кафедры
+        // Создаем невидимое кресло
         Location seatLoc = gridAnchor.clone().add(0.5, 0.2, 0.5);
+        // Задаем начальное направление кресла (куда смотрит игрок)
+        seatLoc.setYaw(pilot.getLocation().getYaw());
+        
         this.coreEntity = (ArmorStand) seatLoc.getWorld().spawnEntity(seatLoc, EntityType.ARMOR_STAND);
         this.coreEntity.setInvisible(true);
         this.coreEntity.setInvulnerable(true);
@@ -36,15 +42,12 @@ public class ActiveShip {
         this.coreEntity.setSmall(true);
 
         for (Block block : blocks) {
-            Location blockLoc = block.getLocation(); // Точные целочисленные координаты блока
-            
-            // Вектор смещения относительно кафедры
+            Location blockLoc = block.getLocation();
             Vector offset = blockLoc.toVector().subtract(gridAnchor.toVector());
 
             BlockState snapshot = block.getState();
             originalBlocks.add(new ShipBlockData(offset, block.getBlockData(), snapshot));
 
-            // Защита от выпадения вещей
             if (block.getState() instanceof Container container) {
                 container.getInventory().clear();
                 container.update(true, false);
@@ -54,17 +57,59 @@ public class ActiveShip {
 
             BlockDisplay display = (BlockDisplay) gridAnchor.getWorld().spawnEntity(blockLoc, EntityType.BLOCK_DISPLAY);
             display.setBlock(snapshot.getBlockData());
+            // Делаем движение визуально плавным (интерполяция)
+            display.setTeleportDuration(2); 
             displayEntities.add(display);
         }
 
         this.coreEntity.addPassenger(pilot);
     }
 
+    // Движение вперед/назад
+    public void move(float forwardParams) {
+        if (forwardParams == 0) return;
+
+        // Определяем направление (вперед или назад)
+        Vector direction = coreEntity.getLocation().getDirection().normalize();
+        direction.multiply(forwardParams > 0 ? SPEED : -SPEED);
+
+        Location newLocation = coreEntity.getLocation().add(direction);
+        coreEntity.teleport(newLocation);
+        
+        updateDisplayEntities();
+    }
+
+    // Поворот влево/вправо
+    public void rotate(float sideParams) {
+        if (sideParams == 0) return;
+
+        Location loc = coreEntity.getLocation();
+        // Вправо (D) - положительный угол, Влево (A) - отрицательный
+        float yawChange = sideParams > 0 ? ROTATION_SPEED : -ROTATION_SPEED;
+        loc.setYaw(loc.getYaw() + yawChange);
+        
+        coreEntity.teleport(loc);
+        updateDisplayEntities();
+    }
+
+    // Синхронизация блоков-голограмм с главным якорем
+    private void updateDisplayEntities() {
+        Location anchor = coreEntity.getLocation().clone().subtract(0.5, 0.2, 0.5);
+        
+        for (int i = 0; i < displayEntities.size(); i++) {
+            BlockDisplay display = displayEntities.get(i);
+            ShipBlockData data = originalBlocks.get(i);
+            
+            // В будущем здесь понадобится матричная математика (cos/sin) для вращения вектора offset
+            // Пока мы просто двигаем блоки вслед за якорем (без вращения самой формы корабля)
+            Location newLoc = anchor.clone().add(data.getRelativeOffset());
+            display.teleport(newLoc);
+        }
+    }
+
     public void restoreBlocks() {
-        // Получаем текущие координаты корабля и привязываем к сетке
         Location currentGridAnchor = coreEntity.getLocation().getBlock().getLocation();
 
-        // Освобождаем игрока и удаляем кресло
         coreEntity.removePassenger(pilot);
         coreEntity.remove();
 
@@ -74,14 +119,11 @@ public class ActiveShip {
 
             display.remove();
 
-            // Вычисляем новую позицию блока
             Location newLoc = currentGridAnchor.clone().add(data.getRelativeOffset());
             Block newBlock = newLoc.getBlock();
 
-            // Восстанавливаем сам блок (доски, сундук и т.д.)
             newBlock.setBlockData(data.getBlockData(), false);
 
-            // Восстанавливаем инвентари (переносим вещи из памяти в новый сундук)
             if (data.getStateSnapshot() instanceof Container oldContainer) {
                 if (newBlock.getState() instanceof Container newContainer) {
                     newContainer.getInventory().setContents(oldContainer.getSnapshotInventory().getContents());
