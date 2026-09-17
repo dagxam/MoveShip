@@ -1,51 +1,87 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
+package com.dagxam.moveship.core;
 
-    <groupId>com.yourname</groupId>
-    <artifactId>MoveShip</artifactId>
-    <version>1.0-SNAPSHOT</version>
-    <packaging>jar</packaging>
+import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.World;
+import org.bukkit.block.Block;
+import org.bukkit.block.BlockState;
+import org.bukkit.block.Container;
+import org.bukkit.entity.ArmorStand;
+import org.bukkit.entity.BlockDisplay;
+import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
 
-    <name>MoveShip</name>
-    <description>Плагин для создания и управления управляемыми кораблями.</description>
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 
-    <properties>
-        <java.version>21</java.version>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    </properties>
+public class ActiveShip {
+    
+    private final Player pilot;
+    private final ArmorStand vehicle;
+    private final List<BlockDisplay> displays = new ArrayList<>();
+    private final List<ShipBlockData> originalBlocks = new ArrayList<>();
 
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.11.0</version>
-                <configuration>
-                    <source>${java.version}</source>
-                    <target>${java.version}</target>
-                </configuration>
-            </plugin>
-        </plugins>
-    </build>
+    public ActiveShip(Player pilot, Location coreLocation, Set<Block> blocks) {
+        this.pilot = pilot;
+        World world = coreLocation.getWorld();
 
-    <repositories>
-        <!-- Репозиторий PaperMC -->
-        <repository>
-            <id>papermc-repo</id>
-            <url>https://repo.papermc.io/repository/maven-public/</url>
-        </repository>
-    </repositories>
+        // 1. Создаем невидимое ядро, на котором будет сидеть игрок (ArmorStand)
+        // Смещаем на 0.5, чтобы ядро было ровно по центру блока
+        Location spawnLoc = coreLocation.clone().add(0.5, 0, 0.5);
+        this.vehicle = world.spawn(spawnLoc, ArmorStand.class, stand -> {
+            stand.setInvisible(true);
+            stand.setInvulnerable(true);
+            stand.setGravity(false);
+            stand.setMarker(true); // Чтобы не мешал кликать мышкой
+            stand.setSmall(true);
+        });
 
-    <dependencies>
-        <!-- Paper API -->
-        <dependency>
-            <groupId>io.papermc.paper</groupId>
-            <artifactId>paper-api</artifactId>
-            <version>1.20.4-R0.1-SNAPSHOT</version>
-            <scope>provided</scope>
-        </dependency>
-    </dependencies>
-</project>
+        // Сажаем пилота на ядро (теперь он не может ходить, но может крутить камерой)
+        this.vehicle.addPassenger(pilot);
+
+        // 2. Обрабатываем каждый отсканированный блок
+        for (Block block : blocks) {
+            Location blockLoc = block.getLocation();
+            BlockState state = block.getState();
+            ItemStack[] savedItems = null;
+
+            // Если это сундук, печь или бочка
+            if (state instanceof Container container) {
+                ItemStack[] originalItems = container.getInventory().getContents();
+                savedItems = new ItemStack[originalItems.length];
+                
+                // Аккуратно копируем предметы в память
+                for (int i = 0; i < originalItems.length; i++) {
+                    if (originalItems[i] != null) {
+                        savedItems[i] = originalItems[i].clone();
+                    }
+                }
+                // Очищаем реальный сундук, чтобы при удалении блока вещи не выпали на землю
+                container.getInventory().clear();
+            }
+
+            // Вычисляем смещение относительно кафедры
+            int offsetX = blockLoc.getBlockX() - coreLocation.getBlockX();
+            int offsetY = blockLoc.getBlockY() - coreLocation.getBlockY();
+            int offsetZ = blockLoc.getBlockZ() - coreLocation.getBlockZ();
+
+            // Сохраняем все данные в наш класс
+            originalBlocks.add(new ShipBlockData(block.getBlockData(), savedItems, offsetX, offsetY, offsetZ));
+
+            // 3. Создаем визуальную сущность BlockDisplay
+            BlockDisplay display = world.spawn(blockLoc.clone().add(0.5, 0, 0.5), BlockDisplay.class, d -> {
+                d.setBlock(block.getBlockData());
+            });
+            displays.add(display);
+
+            // 4. Удаляем физический блок из мира (false означает "без дропа предметов")
+            block.setType(Material.AIR, false);
+        }
+    }
+
+    public Player getPilot() { return pilot; }
+    public ArmorStand getVehicle() { return vehicle; }
+    public List<BlockDisplay> getDisplays() { return displays; }
+    public List<ShipBlockData> getOriginalBlocks() { return originalBlocks; }
+}
