@@ -2,6 +2,7 @@ package com.dagxam.moveship.core;
 
 import com.dagxam.moveship.MoveShipPlugin;
 import org.bukkit.Axis;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -16,6 +17,8 @@ import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
 import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Transformation;
 import org.bukkit.util.Vector;
 import org.joml.AxisAngle4f;
@@ -40,15 +43,18 @@ public class ActiveShip {
 
     private float currentShipYaw = 0f;
 
+    // Переменные для хранения текущего нажатия кнопок (удерживания)
+    private float currentForward = 0f;
+    private float currentSide = 0f;
+    private final BukkitTask movementTask; // Мотор корабля
+
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot = pilot;
         
         this.currentAnchorCenter = anchorLocation.getBlock().getLocation().add(0.5, 0.0, 0.5);
         this.initialPilotYaw = pilot.getLocation().getYaw();
 
-        // Позиция сиденья - ровно то место, где стоял игрок относительно центра кафедры
         this.initialSeatOffset = pilot.getLocation().toVector().subtract(currentAnchorCenter.toVector());
-        // Опускаем сиденье, чтобы игрок на ArmorStand визуально оставался на той же высоте
         this.initialSeatOffset.setY(this.initialSeatOffset.getY() - 1.2); 
 
         Location seatLoc = getCalculatedSeatLocation();
@@ -88,6 +94,23 @@ public class ActiveShip {
         }
 
         this.coreEntity.addPassenger(pilot);
+
+        // Запускаем мотор корабля, который будет двигать его каждый тик (если кнопки нажаты)
+        MoveShipPlugin plugin = JavaPlugin.getPlugin(MoveShipPlugin.class);
+        this.movementTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (currentForward != 0) {
+                move(currentForward);
+            }
+            if (currentSide != 0) {
+                rotate(currentSide);
+            }
+        }, 1L, 1L);
+    }
+
+    // Новый метод, который принимает нажатия от слушателя
+    public void setInput(float forward, float side) {
+        this.currentForward = forward;
+        this.currentSide = side;
     }
 
     private Location getCalculatedSeatLocation() {
@@ -95,7 +118,6 @@ public class ActiveShip {
         double cos = Math.cos(rad);
         double sin = Math.sin(rad);
 
-        // Орбитальное вращение вектора позиции игрока
         double newX = initialSeatOffset.getX() * cos - initialSeatOffset.getZ() * sin;
         double newZ = initialSeatOffset.getX() * sin + initialSeatOffset.getZ() * cos;
 
@@ -114,7 +136,6 @@ public class ActiveShip {
             double newX = offset.getX() * cos - offset.getZ() * sin;
             double newZ = offset.getX() * sin + offset.getZ() * cos;
 
-            // Проверяем центр каждого будущего блока
             Location targetBlockLoc = targetAnchorCenter.clone().add(newX, offset.getY() + 0.5, newZ);
             Block targetWorldBlock = targetBlockLoc.getBlock();
 
@@ -128,7 +149,6 @@ public class ActiveShip {
     public void move(float forwardParams) {
         if (forwardParams == 0) return;
 
-        // Двигаемся по направлению взгляда (без учета наклона Y)
         Vector direction = pilot.getLocation().getDirection().setY(0).normalize();
         direction.multiply(forwardParams > 0 ? SPEED : -SPEED);
 
@@ -176,6 +196,11 @@ public class ActiveShip {
     }
 
     public void restoreBlocks() {
+        // Глушим мотор перед остановкой
+        if (this.movementTask != null) {
+            this.movementTask.cancel();
+        }
+
         coreEntity.removePassenger(pilot);
 
         Location gridAnchor = new Location(
@@ -232,13 +257,12 @@ public class ActiveShip {
                 }
             }
 
-            // ПРИНУДИТЕЛЬНОЕ ВОССТАНОВЛЕНИЕ ТЕГА У КАФЕДРЫ
             if (data.getStateSnapshot() instanceof org.bukkit.block.Lectern oldLectern) {
                 if (oldLectern.getPersistentDataContainer().has(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE)) {
                     BlockState newState = newBlock.getState();
                     if (newState instanceof org.bukkit.block.Lectern newLectern) {
                         newLectern.getPersistentDataContainer().set(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE, (byte) 1);
-                        newLectern.update(true); // true форсирует обновление состояния в мире
+                        newLectern.update(true); 
                     }
                 }
             }
