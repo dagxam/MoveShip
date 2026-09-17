@@ -1,13 +1,29 @@
 package com.dagxam.moveship.core;
 
+import org.bukkit.block.BlockState;
 import org.bukkit.block.data.BlockData;
-import org.bukkit.inventory.ItemStack;
+import org.bukkit.util.Vector;
 
-// Record - это современный способ создания классов-хранилищ данных в Java
-public record ShipBlockData(
-        BlockData blockData,      // Тип блока и его поворот (например, ступеньки смотрят на север)
-        ItemStack[] inventory,    // Вещи внутри (null, если это обычный блок досок)
-        int offsetX,              // Смещение по X от кафедры
-        int offsetY,              // Смещение по Y
-        int offsetZ               // Смещение по Z
-) {}
+public class ShipBlockData {
+    private final Vector relativeOffset;
+    private final BlockData blockData;
+    private final BlockState stateSnapshot;
+
+    public ShipBlockData(Vector relativeOffset, BlockData blockData, BlockState stateSnapshot) {
+        this.relativeOffset = relativeOffset;
+        this.blockData = blockData;
+        this.stateSnapshot = stateSnapshot;
+    }
+
+    public Vector getRelativeOffset() {
+        return relativeOffset;
+    }
+
+    public BlockData getBlockData() {
+        return blockData;
+    }
+
+    public BlockState getStateSnapshot() {
+        return stateSnapshot;
+    }
+}
