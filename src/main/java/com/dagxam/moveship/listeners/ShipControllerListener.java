@@ -46,8 +46,6 @@ public class ShipControllerListener implements Listener {
             if (lectern.getPersistentDataContainer().has(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE)) {
                 
                 event.setCancelled(true);
-                
-                // Открываем наше меню и передаем координаты этой кафедры
                 ShipGUI.open(event.getPlayer(), block.getLocation());
             }
         }
