@@ -1,5 +1,6 @@
 package com.dagxam.moveship.core;
 
+import com.dagxam.moveship.MoveShipPlugin;
 import org.bukkit.Axis;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -14,6 +15,7 @@ import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.util.Transformation;
 import org.bukkit.util.Vector;
 import org.joml.AxisAngle4f;
@@ -29,19 +31,27 @@ public class ActiveShip {
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
 
-    private static final double SPEED = 0.3;
-    private static final float ROTATION_SPEED = 3.0f;
+    private static final double SPEED = 0.4;
+    private static final float ROTATION_SPEED = 4.0f;
+
+    private Location currentAnchorCenter;
+    private final Vector initialSeatOffset; 
+    private final float initialPilotYaw;
 
     private float currentShipYaw = 0f;
 
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot = pilot;
-
-        Location gridAnchorCenter = anchorLocation.getBlock().getLocation().add(0.5, 0.0, 0.5);
-
-        Location seatLoc = gridAnchorCenter.clone().add(0, 0.2, 0);
-        seatLoc.setYaw(pilot.getLocation().getYaw());
         
+        this.currentAnchorCenter = anchorLocation.getBlock().getLocation().add(0.5, 0.0, 0.5);
+        this.initialPilotYaw = pilot.getLocation().getYaw();
+
+        // Позиция сиденья - ровно то место, где стоял игрок относительно центра кафедры
+        this.initialSeatOffset = pilot.getLocation().toVector().subtract(currentAnchorCenter.toVector());
+        // Опускаем сиденье, чтобы игрок на ArmorStand визуально оставался на той же высоте
+        this.initialSeatOffset.setY(this.initialSeatOffset.getY() - 1.2); 
+
+        Location seatLoc = getCalculatedSeatLocation();
         this.coreEntity = (ArmorStand) seatLoc.getWorld().spawnEntity(seatLoc, EntityType.ARMOR_STAND);
         this.coreEntity.setInvisible(true);
         this.coreEntity.setInvulnerable(true);
@@ -50,7 +60,7 @@ public class ActiveShip {
 
         for (Block block : blocks) {
             Location blockCenter = block.getLocation().add(0.5, 0.0, 0.5);
-            Vector offset = blockCenter.toVector().subtract(gridAnchorCenter.toVector());
+            Vector offset = blockCenter.toVector().subtract(currentAnchorCenter.toVector());
 
             BlockState snapshot = block.getState();
             originalBlocks.add(new ShipBlockData(offset, block.getBlockData(), snapshot));
@@ -62,7 +72,7 @@ public class ActiveShip {
 
             block.setType(Material.AIR, false);
 
-            BlockDisplay display = (BlockDisplay) gridAnchorCenter.getWorld().spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
+            BlockDisplay display = (BlockDisplay) currentAnchorCenter.getWorld().spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
             display.setBlock(snapshot.getBlockData());
             display.setTeleportDuration(2);
 
@@ -80,26 +90,34 @@ public class ActiveShip {
         this.coreEntity.addPassenger(pilot);
     }
 
-    // СИСТЕМА КОЛЛИЗИИ: Проверяет, можно ли сдвинуть корабль в новую точку
-    private boolean canMove(Location targetCoreLoc, float targetYaw) {
-        Location targetAnchorCenter = targetCoreLoc.clone().subtract(0, 0.2, 0);
-        
+    private Location getCalculatedSeatLocation() {
+        double rad = Math.toRadians(currentShipYaw);
+        double cos = Math.cos(rad);
+        double sin = Math.sin(rad);
+
+        // Орбитальное вращение вектора позиции игрока
+        double newX = initialSeatOffset.getX() * cos - initialSeatOffset.getZ() * sin;
+        double newZ = initialSeatOffset.getX() * sin + initialSeatOffset.getZ() * cos;
+
+        Location seatLoc = currentAnchorCenter.clone().add(newX, initialSeatOffset.getY(), newZ);
+        seatLoc.setYaw(initialPilotYaw + currentShipYaw);
+        return seatLoc;
+    }
+
+    private boolean canMove(Location targetAnchorCenter, float targetYaw) {
         double rad = Math.toRadians(targetYaw);
         double cos = Math.cos(rad);
         double sin = Math.sin(rad);
 
         for (ShipBlockData data : originalBlocks) {
             Vector offset = data.getRelativeOffset();
-
-            // Вычисляем будущие координаты каждого блока
             double newX = offset.getX() * cos - offset.getZ() * sin;
             double newZ = offset.getX() * sin + offset.getZ() * cos;
 
-            Location targetBlockLoc = targetAnchorCenter.clone().add(newX, offset.getY(), newZ);
+            // Проверяем центр каждого будущего блока
+            Location targetBlockLoc = targetAnchorCenter.clone().add(newX, offset.getY() + 0.5, newZ);
             Block targetWorldBlock = targetBlockLoc.getBlock();
 
-            // Если блок твердый (камень, земля, дерево) — отменяем движение.
-            // Вода, воздух, высокая трава пропустят корабль.
             if (targetWorldBlock.getType().isSolid()) {
                 return false;
             }
@@ -110,14 +128,15 @@ public class ActiveShip {
     public void move(float forwardParams) {
         if (forwardParams == 0) return;
 
-        Vector direction = coreEntity.getLocation().getDirection().normalize();
+        // Двигаемся по направлению взгляда (без учета наклона Y)
+        Vector direction = pilot.getLocation().getDirection().setY(0).normalize();
         direction.multiply(forwardParams > 0 ? SPEED : -SPEED);
 
-        Location targetLocation = coreEntity.getLocation().add(direction);
+        Location targetAnchor = currentAnchorCenter.clone().add(direction);
 
-        // Перед тем как сдвинуть, проверяем препятствия!
-        if (canMove(targetLocation, currentShipYaw)) {
-            coreEntity.teleport(targetLocation);
+        if (canMove(targetAnchor, currentShipYaw)) {
+            currentAnchorCenter = targetAnchor;
+            coreEntity.teleport(getCalculatedSeatLocation());
             updateDisplayEntities();
         }
     }
@@ -125,25 +144,18 @@ public class ActiveShip {
     public void rotate(float sideParams) {
         if (sideParams == 0) return;
 
-        float yawChange = sideParams > 0 ? ROTATION_SPEED : -ROTATION_SPEED;
-        
+        float yawChange = sideParams > 0 ? -ROTATION_SPEED : ROTATION_SPEED;
         float targetShipYaw = (currentShipYaw + yawChange) % 360;
         if (targetShipYaw < 0) targetShipYaw += 360;
 
-        Location targetLocation = coreEntity.getLocation().clone();
-        targetLocation.setYaw(targetLocation.getYaw() + yawChange);
-
-        // Перед тем как повернуть корпус, проверяем, не заденет ли он стену!
-        if (canMove(coreEntity.getLocation(), targetShipYaw)) {
+        if (canMove(currentAnchorCenter, targetShipYaw)) {
             currentShipYaw = targetShipYaw;
-            coreEntity.teleport(targetLocation);
+            coreEntity.teleport(getCalculatedSeatLocation());
             updateDisplayEntities();
         }
     }
 
     private void updateDisplayEntities() {
-        Location anchorCenter = coreEntity.getLocation().clone().subtract(0, 0.2, 0);
-        
         double rad = Math.toRadians(currentShipYaw);
         double cos = Math.cos(rad);
         double sin = Math.sin(rad);
@@ -153,11 +165,10 @@ public class ActiveShip {
             ShipBlockData data = originalBlocks.get(i);
             
             Vector offset = data.getRelativeOffset();
-
             double newX = offset.getX() * cos - offset.getZ() * sin;
             double newZ = offset.getX() * sin + offset.getZ() * cos;
 
-            Location newLoc = anchorCenter.clone().add(newX, offset.getY(), newZ);
+            Location newLoc = currentAnchorCenter.clone().add(newX, offset.getY(), newZ);
             newLoc.setYaw(currentShipYaw);
             
             display.teleport(newLoc);
@@ -167,12 +178,11 @@ public class ActiveShip {
     public void restoreBlocks() {
         coreEntity.removePassenger(pilot);
 
-        Location currentAnchor = coreEntity.getLocation().subtract(0, 0.2, 0);
         Location gridAnchor = new Location(
-                currentAnchor.getWorld(),
-                Math.floor(currentAnchor.getX()) + 0.5,
-                currentAnchor.getY(),
-                Math.floor(currentAnchor.getZ()) + 0.5
+                currentAnchorCenter.getWorld(),
+                Math.floor(currentAnchorCenter.getX()) + 0.5,
+                currentAnchorCenter.getY(),
+                Math.floor(currentAnchorCenter.getZ()) + 0.5
         );
 
         coreEntity.remove();
@@ -192,7 +202,6 @@ public class ActiveShip {
             display.remove();
 
             Vector offset = data.getRelativeOffset();
-
             int dx = (int) Math.round(offset.getX() * cos - offset.getZ() * sin);
             int dz = (int) Math.round(offset.getX() * sin + offset.getZ() * cos);
             int dy = offset.getBlockY();
@@ -214,13 +223,23 @@ public class ActiveShip {
                 }
             }
 
-            // Возвращаем блок (если там была трава или вода - они заменятся кораблем)
             newBlock.setBlockData(blockData, false);
 
             if (data.getStateSnapshot() instanceof Container oldContainer) {
                 if (newBlock.getState() instanceof Container newContainer) {
                     newContainer.getInventory().setContents(oldContainer.getSnapshotInventory().getContents());
                     newContainer.update();
+                }
+            }
+
+            // ПРИНУДИТЕЛЬНОЕ ВОССТАНОВЛЕНИЕ ТЕГА У КАФЕДРЫ
+            if (data.getStateSnapshot() instanceof org.bukkit.block.Lectern oldLectern) {
+                if (oldLectern.getPersistentDataContainer().has(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE)) {
+                    BlockState newState = newBlock.getState();
+                    if (newState instanceof org.bukkit.block.Lectern newLectern) {
+                        newLectern.getPersistentDataContainer().set(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE, (byte) 1);
+                        newLectern.update(true); // true форсирует обновление состояния в мире
+                    }
                 }
             }
         }
