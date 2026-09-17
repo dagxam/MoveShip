@@ -35,11 +35,11 @@ public class ShipMovementListener implements Listener {
                 float forwardVal = 0;
                 float sideVal = 0;
 
-                try {
+                // Безопасная проверка, чтобы избежать ошибок в консоли для новых версий
+                if (event.getPacket().getFloat().size() >= 2) {
                     sideVal = event.getPacket().getFloat().read(0);
                     forwardVal = event.getPacket().getFloat().read(1);
-                } catch (Exception e) {
-                    // Парсинг нового формата Minecraft (1.20.6 / 1.21)
+                } else {
                     boolean fwd = false, bwd = false, l = false, r = false;
                     for (Object obj : event.getPacket().getModifier().getValues()) {
                         if (obj != null) {
@@ -57,7 +57,6 @@ public class ShipMovementListener implements Listener {
                 final float finalForward = forwardVal;
                 final float finalSide = sideVal;
 
-                // Передаем текущее состояние кнопок (даже если это нули, чтобы мотор остановился)
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     ship.setInput(finalForward, finalSide);
                 });
