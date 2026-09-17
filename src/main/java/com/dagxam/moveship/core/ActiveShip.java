@@ -76,27 +76,13 @@ public class ActiveShip {
                 container.update(true, false);
             }
 
-            // --- ИСПРАВЛЕНИЕ: Заполнение пустот водой ---
-            boolean shouldBeWater = false;
-            if (block.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged()) {
-                shouldBeWater = true;
-            } else {
-                // Проверяем соседние блоки. Если корабль стоял в воде, на его месте должна остаться вода
-                for (BlockFace face : new BlockFace[]{BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.DOWN, BlockFace.UP}) {
-                    Material neighbor = block.getRelative(face).getType();
-                    if (neighbor == Material.WATER || neighbor == Material.SEAGRASS || neighbor == Material.KELP || neighbor == Material.TALL_SEAGRASS) {
-                        shouldBeWater = true;
-                        break;
-                    }
-                }
-            }
-
+            // ИСПРАВЛЕНИЕ 1: Идеальная логика воды. Заполняем водой только те блоки, которые УЖЕ пропитаны ей.
+            boolean shouldBeWater = (block.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged());
             if (shouldBeWater) {
-                block.setType(Material.WATER, false); // Заменяем блок на воду
+                block.setType(Material.WATER, false);
             } else {
-                block.setType(Material.AIR, false);   // Заменяем блок на воздух
+                block.setType(Material.AIR, false);
             }
-            // ----------------------------------------------
 
             BlockDisplay display = (BlockDisplay) currentAnchorCenter.getWorld().spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
             display.setBlock(snapshot.getBlockData());
@@ -167,7 +153,14 @@ public class ActiveShip {
     public void move(float forwardParams) {
         if (forwardParams == 0) return;
 
-        Vector direction = pilot.getLocation().getDirection().setY(0).normalize();
+        // ИСПРАВЛЕНИЕ 2: Защита от математической ошибки, если игрок смотрит ровно вниз
+        Vector direction = pilot.getLocation().getDirection().setY(0);
+        if (direction.lengthSquared() > 0.0001) {
+            direction.normalize();
+        } else {
+            direction = new Vector(0, 0, 1);
+        }
+        
         direction.multiply(forwardParams > 0 ? SPEED : -SPEED);
 
         Location targetAnchor = currentAnchorCenter.clone().add(direction);
@@ -265,11 +258,9 @@ public class ActiveShip {
                 }
             }
 
-            // --- ИСПРАВЛЕНИЕ: Чтобы полублоки и ступеньки не создавали дыры при остановке в воде ---
             if (newBlock.getType() == Material.WATER && blockData instanceof Waterlogged wl) {
                 wl.setWaterlogged(true);
             }
-            // -----------------------------------------------------------------------------------------
 
             newBlock.setBlockData(blockData, false);
 
