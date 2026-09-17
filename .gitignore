@@ -1,0 +1,14 @@
+# Сборка Maven
+target/
+*.jar
+
+# Файлы IDE (IntelliJ IDEA, Eclipse)
+.idea/
+*.iml
+.settings/
+.classpath
+.project
+
+# Системные файлы
+.DS_Store
+Thumbs.db
