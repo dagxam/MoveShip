@@ -1,4 +1,4 @@
-package com.yourname.moveship.gui;
+package com.dagxam.moveship.gui;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
