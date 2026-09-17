@@ -17,55 +17,81 @@ import java.util.Set;
 
 public class ActiveShip {
     private final Player pilot;
-    private final ArmorStand coreEntity; // Невидимое сиденье для игрока
+    private final ArmorStand coreEntity;
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
 
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot = pilot;
 
-        // 1. Создаем "ядро" корабля (кресло пилота) прямо по центру кафедры
-        Location coreLoc = anchorLocation.clone().add(0.5, 0, 0.5);
-        this.coreEntity = (ArmorStand) anchorLocation.getWorld().spawnEntity(coreLoc, EntityType.ARMOR_STAND);
+        // Строгая привязка к сетке блоков
+        Location gridAnchor = anchorLocation.getBlock().getLocation();
+
+        // Создаем невидимое сиденье по центру блока кафедры
+        Location seatLoc = gridAnchor.clone().add(0.5, 0.2, 0.5);
+        this.coreEntity = (ArmorStand) seatLoc.getWorld().spawnEntity(seatLoc, EntityType.ARMOR_STAND);
         this.coreEntity.setInvisible(true);
         this.coreEntity.setInvulnerable(true);
         this.coreEntity.setGravity(false);
-        this.coreEntity.setSmall(true); // Чтобы игрок сидел ниже, ближе к полу
+        this.coreEntity.setSmall(true);
 
-        // 2. Обрабатываем каждый блок
         for (Block block : blocks) {
-            Location blockLoc = block.getLocation();
+            Location blockLoc = block.getLocation(); // Точные целочисленные координаты блока
             
-            // Вектор смещения относительно кафедры (чтобы при остановке собрать обратно)
-            Vector offset = blockLoc.toVector().subtract(anchorLocation.toVector());
+            // Вектор смещения относительно кафедры
+            Vector offset = blockLoc.toVector().subtract(gridAnchor.toVector());
 
-            // ДЕЛАЕМ СЛЕПОК: Сохраняет инвентари, текст на табличках и т.д.
             BlockState snapshot = block.getState();
             originalBlocks.add(new ShipBlockData(offset, block.getBlockData(), snapshot));
 
-            // ПРЕДОТВРАЩЕНИЕ ДРОПА: Если это сундук/печь, удаляем вещи в мире ДО разрушения блока
-            BlockState stateToClear = block.getState();
-            if (stateToClear instanceof Container container) {
+            // Защита от выпадения вещей
+            if (block.getState() instanceof Container container) {
                 container.getInventory().clear();
-                container.update(true, false); // Применяем очистку без обновления физики
+                container.update(true, false);
             }
 
-            // Удаляем физический блок
             block.setType(Material.AIR, false);
 
-            // Спавним визуальную копию (BlockDisplay)
-            BlockDisplay display = (BlockDisplay) anchorLocation.getWorld().spawnEntity(blockLoc, EntityType.BLOCK_DISPLAY);
+            BlockDisplay display = (BlockDisplay) gridAnchor.getWorld().spawnEntity(blockLoc, EntityType.BLOCK_DISPLAY);
             display.setBlock(snapshot.getBlockData());
             displayEntities.add(display);
         }
 
-        // 3. Сажаем пилота на корабль
         this.coreEntity.addPassenger(pilot);
+    }
+
+    public void restoreBlocks() {
+        // Получаем текущие координаты корабля и привязываем к сетке
+        Location currentGridAnchor = coreEntity.getLocation().getBlock().getLocation();
+
+        // Освобождаем игрока и удаляем кресло
+        coreEntity.removePassenger(pilot);
+        coreEntity.remove();
+
+        for (int i = 0; i < displayEntities.size(); i++) {
+            BlockDisplay display = displayEntities.get(i);
+            ShipBlockData data = originalBlocks.get(i);
+
+            display.remove();
+
+            // Вычисляем новую позицию блока
+            Location newLoc = currentGridAnchor.clone().add(data.getRelativeOffset());
+            Block newBlock = newLoc.getBlock();
+
+            // Восстанавливаем сам блок (доски, сундук и т.д.)
+            newBlock.setBlockData(data.getBlockData(), false);
+
+            // Восстанавливаем инвентари (переносим вещи из памяти в новый сундук)
+            if (data.getStateSnapshot() instanceof Container oldContainer) {
+                if (newBlock.getState() instanceof Container newContainer) {
+                    newContainer.getInventory().setContents(oldContainer.getSnapshotInventory().getContents());
+                    newContainer.update();
+                }
+            }
+        }
     }
 
     public Player getPilot() {
         return pilot;
     }
-    
-    // Позже мы добавим сюда методы move() и stop()
 }
