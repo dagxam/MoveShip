@@ -46,6 +46,11 @@ public class ActiveShip {
 
     private float currentForward = 0f;
     private float currentSide = 0f;
+    
+    // Предохранители для игнорирования ложных отключений кнопок клиентом
+    private int forwardStopTicks = -1;
+    private int sideStopTicks = -1;
+    
     private final BukkitTask movementTask; 
 
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
@@ -76,7 +81,6 @@ public class ActiveShip {
                 container.update(true, false);
             }
 
-            // ИСПРАВЛЕНИЕ 1: Идеальная логика воды. Заполняем водой только те блоки, которые УЖЕ пропитаны ей.
             boolean shouldBeWater = (block.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged());
             if (shouldBeWater) {
                 block.setType(Material.WATER, false);
@@ -103,6 +107,23 @@ public class ActiveShip {
 
         MoveShipPlugin plugin = JavaPlugin.getPlugin(MoveShipPlugin.class);
         this.movementTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            
+            // Логика предохранителя для движения вперед/назад
+            if (forwardStopTicks > 0) {
+                forwardStopTicks--;
+            } else if (forwardStopTicks == 0) {
+                currentForward = 0;
+                forwardStopTicks = -1;
+            }
+
+            // Логика предохранителя для поворотов
+            if (sideStopTicks > 0) {
+                sideStopTicks--;
+            } else if (sideStopTicks == 0) {
+                currentSide = 0;
+                sideStopTicks = -1;
+            }
+
             if (currentForward != 0) {
                 move(currentForward);
             }
@@ -113,8 +134,19 @@ public class ActiveShip {
     }
 
     public void setInput(float forward, float side) {
-        this.currentForward = forward;
-        this.currentSide = side;
+        if (forward != 0) {
+            this.currentForward = forward;
+            this.forwardStopTicks = -1;
+        } else if (this.forwardStopTicks == -1) {
+            this.forwardStopTicks = 5; // Ждем 5 тиков перед реальной остановкой
+        }
+
+        if (side != 0) {
+            this.currentSide = side;
+            this.sideStopTicks = -1;
+        } else if (this.sideStopTicks == -1) {
+            this.sideStopTicks = 5;
+        }
     }
 
     private Location getCalculatedSeatLocation() {
@@ -153,7 +185,6 @@ public class ActiveShip {
     public void move(float forwardParams) {
         if (forwardParams == 0) return;
 
-        // ИСПРАВЛЕНИЕ 2: Защита от математической ошибки, если игрок смотрит ровно вниз
         Vector direction = pilot.getLocation().getDirection().setY(0);
         if (direction.lengthSquared() > 0.0001) {
             direction.normalize();
