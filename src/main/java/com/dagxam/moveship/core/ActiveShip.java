@@ -12,6 +12,7 @@ import org.bukkit.block.Container;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
 import org.bukkit.block.data.Orientable;
+import org.bukkit.block.data.Waterlogged;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.EntityType;
@@ -43,10 +44,9 @@ public class ActiveShip {
 
     private float currentShipYaw = 0f;
 
-    // Переменные для хранения текущего нажатия кнопок (удерживания)
     private float currentForward = 0f;
     private float currentSide = 0f;
-    private final BukkitTask movementTask; // Мотор корабля
+    private final BukkitTask movementTask; 
 
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot = pilot;
@@ -76,7 +76,27 @@ public class ActiveShip {
                 container.update(true, false);
             }
 
-            block.setType(Material.AIR, false);
+            // --- ИСПРАВЛЕНИЕ: Заполнение пустот водой ---
+            boolean shouldBeWater = false;
+            if (block.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged()) {
+                shouldBeWater = true;
+            } else {
+                // Проверяем соседние блоки. Если корабль стоял в воде, на его месте должна остаться вода
+                for (BlockFace face : new BlockFace[]{BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.DOWN, BlockFace.UP}) {
+                    Material neighbor = block.getRelative(face).getType();
+                    if (neighbor == Material.WATER || neighbor == Material.SEAGRASS || neighbor == Material.KELP || neighbor == Material.TALL_SEAGRASS) {
+                        shouldBeWater = true;
+                        break;
+                    }
+                }
+            }
+
+            if (shouldBeWater) {
+                block.setType(Material.WATER, false); // Заменяем блок на воду
+            } else {
+                block.setType(Material.AIR, false);   // Заменяем блок на воздух
+            }
+            // ----------------------------------------------
 
             BlockDisplay display = (BlockDisplay) currentAnchorCenter.getWorld().spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
             display.setBlock(snapshot.getBlockData());
@@ -95,7 +115,6 @@ public class ActiveShip {
 
         this.coreEntity.addPassenger(pilot);
 
-        // Запускаем мотор корабля, который будет двигать его каждый тик (если кнопки нажаты)
         MoveShipPlugin plugin = JavaPlugin.getPlugin(MoveShipPlugin.class);
         this.movementTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             if (currentForward != 0) {
@@ -107,7 +126,6 @@ public class ActiveShip {
         }, 1L, 1L);
     }
 
-    // Новый метод, который принимает нажатия от слушателя
     public void setInput(float forward, float side) {
         this.currentForward = forward;
         this.currentSide = side;
@@ -196,7 +214,6 @@ public class ActiveShip {
     }
 
     public void restoreBlocks() {
-        // Глушим мотор перед остановкой
         if (this.movementTask != null) {
             this.movementTask.cancel();
         }
@@ -247,6 +264,12 @@ public class ActiveShip {
                     else if (orientable.getAxis() == Axis.Z) orientable.setAxis(Axis.X);
                 }
             }
+
+            // --- ИСПРАВЛЕНИЕ: Чтобы полублоки и ступеньки не создавали дыры при остановке в воде ---
+            if (newBlock.getType() == Material.WATER && blockData instanceof Waterlogged wl) {
+                wl.setWaterlogged(true);
+            }
+            // -----------------------------------------------------------------------------------------
 
             newBlock.setBlockData(blockData, false);
 
