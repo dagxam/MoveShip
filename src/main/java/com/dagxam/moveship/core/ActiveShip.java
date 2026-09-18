@@ -36,9 +36,13 @@ public class ActiveShip {
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
 
-    // Плавность: скорость за тик (таск работает каждый тик)
+    // Плавность: тик = 1, шаг = 0.25 блока/тик (итого 5 блоков/сек)
     private static final double SPEED = 0.25;
     private static final float ROTATION_SPEED = 3.0f;
+
+    // Интерполяция BlockDisplay: длительность = 1 тик (совпадает с таском)
+    private static final int INTERP_DURATION = 2;
+    private static final int INTERP_DELAY = 0;
 
     private Location currentAnchorCenter;
     private final float initialPilotYaw;
@@ -67,6 +71,7 @@ public class ActiveShip {
         this.coreEntity.setSmall(true);
 
         for (Block block : blocks) {
+            // Центр блока (Bukkit BlockDisplay позиционируется по углу, Transformation смещает на -0.5)
             Location blockCenter = block.getLocation().add(0.5, 0.0, 0.5);
             Vector offset = blockCenter.toVector().subtract(currentAnchorCenter.toVector());
 
@@ -78,12 +83,8 @@ public class ActiveShip {
                 container.update(true, false);
             }
 
-            // === ИСПРАВЛЕНИЕ: вода только если блок РЕАЛЬНО был waterlogged ===
-            // Больше не проверяем соседей — из-за этого вода заливала корпус изнутри.
-            boolean shouldBeWater = false;
-            if (block.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged()) {
-                shouldBeWater = true;
-            }
+            // Вода — только если блок реально был waterlogged (не из-за соседей)
+            boolean shouldBeWater = block.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged();
 
             if (shouldBeWater) {
                 block.setType(Material.WATER, false);
@@ -91,16 +92,16 @@ public class ActiveShip {
                 block.setType(Material.AIR, false);
             }
 
-            BlockDisplay display = (BlockDisplay) currentAnchorCenter.getWorld().spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
+            BlockDisplay display = (BlockDisplay) currentAnchorCenter.getWorld()
+                    .spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
             display.setBlock(snapshot.getBlockData());
 
-            // === ИСПРАВЛЕНИЕ: интерполяция для плавности ===
-            // Длительность = 2 тика (таск идёт каждый тик → перекрытие кадров даёт плавность)
-            display.setInterpolationDuration(2);
-            display.setInterpolationDelay(0);
-            display.setTeleportDuration(2);
+            // === ПЛАВНОСТЬ ===
+            display.setInterpolationDuration(INTERP_DURATION);
+            display.setInterpolationDelay(INTERP_DELAY);
+            display.setTeleportDuration(INTERP_DURATION);
 
-            // === ИСПРАВЛЕНИЕ: rotation обновляется вместе с yaw ===
+            // === ПОВОРОТ: rotation вокруг Y на текущий yaw корабля ===
             display.setTransformation(buildTransformation(currentShipYaw));
 
             displayEntities.add(display);
@@ -109,19 +110,20 @@ public class ActiveShip {
         this.coreEntity.addPassenger(pilot);
 
         MoveShipPlugin plugin = JavaPlugin.getPlugin(MoveShipPlugin.class);
-        // === ИСПРАВЛЕНИЕ: таск каждый тик для плавности ===
+
+        // Таск каждый тик — для плавности
         this.movementTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
 
             if (forwardStopTicks > 0) {
                 forwardStopTicks--;
-            } else if (forwardStopTicks <= 0 && forwardStopTicks != -1) {
+            } else if (forwardStopTicks == 0) {
                 currentForward = 0;
                 forwardStopTicks = -1;
             }
 
             if (sideStopTicks > 0) {
                 sideStopTicks--;
-            } else if (sideStopTicks <= 0 && sideStopTicks != -1) {
+            } else if (sideStopTicks == 0) {
                 currentSide = 0;
                 sideStopTicks = -1;
             }
@@ -136,8 +138,10 @@ public class ActiveShip {
     }
 
     /**
-     * Собирает Transformation для BlockDisplay с поворотом вокруг Y на заданный yaw.
-     * Translation -0.5 по X/Z — чтобы блок встал центром в точку сущности.
+     * Transformation для BlockDisplay:
+     * - translation -0.5 по X/Z — чтобы блок встал центром в точку сущности
+     * - rotation вокруг Y на -yaw (Minecraft yaw по часовой, JOML — против)
+     * - leftRotation = identity
      */
     private Transformation buildTransformation(float yawDegrees) {
         float yawRad = (float) Math.toRadians(-yawDegrees);
@@ -147,7 +151,7 @@ public class ActiveShip {
                 new Vector3f(-0.5f, 0f, -0.5f),
                 new AxisAngle4f(rotation),
                 new Vector3f(1f, 1f, 1f),
-                new AxisAngle4f(0, 0, 1, 0)
+                new AxisAngle4f(0f, 0f, 1f, 0f)
         );
     }
 
@@ -233,6 +237,8 @@ public class ActiveShip {
         double cos = Math.cos(rad);
         double sin = Math.sin(rad);
 
+        Transformation transform = buildTransformation(currentShipYaw);
+
         for (int i = 0; i < displayEntities.size(); i++) {
             BlockDisplay display = displayEntities.get(i);
             ShipBlockData data = originalBlocks.get(i);
@@ -243,9 +249,9 @@ public class ActiveShip {
 
             Location newLoc = currentAnchorCenter.clone().add(newX, offset.getY(), newZ);
 
-            // === ИСПРАВЛЕНИЕ: teleport + обновление rotation, чтобы блоки не "залипали" ===
+            // Сначала позиция, потом rotation — иначе BlockDisplay «моргает» на 1 кадр
             display.teleport(newLoc);
-            display.setTransformation(buildTransformation(currentShipYaw));
+            display.setTransformation(transform);
         }
     }
 
@@ -293,18 +299,18 @@ public class ActiveShip {
                     face = rotateFaceRight(face);
                 }
                 directional.setFacing(face);
-            }
-            else if (blockData instanceof Orientable orientable) {
+            } else if (blockData instanceof Orientable orientable) {
                 if (rotations % 2 != 0) {
                     if (orientable.getAxis() == Axis.X) orientable.setAxis(Axis.Z);
                     else if (orientable.getAxis() == Axis.Z) orientable.setAxis(Axis.X);
                 }
             }
 
-            // === ИСПРАВЛЕНИЕ: waterlogged восстанавливаем ДО установки блока ===
+            // Waterlogged восстанавливаем ДО setBlockData
             if (blockData instanceof Waterlogged wl) {
-                wl.setWaterlogged(data.getStateSnapshot().getBlockData() instanceof Waterlogged oldWl
-                        && oldWl.isWaterlogged());
+                boolean wasWater = data.getStateSnapshot().getBlockData() instanceof Waterlogged oldWl
+                        && oldWl.isWaterlogged();
+                wl.setWaterlogged(wasWater);
             }
 
             newBlock.setBlockData(blockData, false);
