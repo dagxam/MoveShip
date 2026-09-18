@@ -97,6 +97,8 @@ public class ShipScanner {
             case BELL:
             case BOOKSHELF:
             case CHISELED_BOOKSHELF:
+            case LADDER: // <---- ИСПРАВЛЕНИЕ: Добавлена настенная лестница
+            case VINE:   // Заодно добавил лианы, если захотите декоративные паруса или заросли
             // Механизмы
             case LEVER:
             case DAYLIGHT_DETECTOR:
