@@ -35,11 +35,11 @@ public class ActiveShip {
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
 
-    private static final double SPEED = 0.4;
-    private static final float ROTATION_SPEED = 4.0f;
+    // Увеличена скорость, так как обновление теперь каждые 2 тика
+    private static final double SPEED = 0.5;
+    private static final float ROTATION_SPEED = 6.0f;
 
     private Location currentAnchorCenter;
-    private final Vector initialSeatOffset; 
     private final float initialPilotYaw;
 
     private float currentShipYaw = 0f;
@@ -47,7 +47,6 @@ public class ActiveShip {
     private float currentForward = 0f;
     private float currentSide = 0f;
     
-    // Предохранители для игнорирования ложных отключений кнопок клиентом
     private int forwardStopTicks = -1;
     private int sideStopTicks = -1;
     
@@ -56,11 +55,9 @@ public class ActiveShip {
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot = pilot;
         
-        this.currentAnchorCenter = anchorLocation.getBlock().getLocation().add(0.5, 0.0, 0.5);
+        // ИСПРАВЛЕНИЕ 3: Центр вращения — это сам игрок. Больше никаких полетов в воздухе на дуге.
+        this.currentAnchorCenter = pilot.getLocation().clone();
         this.initialPilotYaw = pilot.getLocation().getYaw();
-
-        this.initialSeatOffset = pilot.getLocation().toVector().subtract(currentAnchorCenter.toVector());
-        this.initialSeatOffset.setY(this.initialSeatOffset.getY() - 1.2); 
 
         Location seatLoc = getCalculatedSeatLocation();
         this.coreEntity = (ArmorStand) seatLoc.getWorld().spawnEntity(seatLoc, EntityType.ARMOR_STAND);
@@ -81,7 +78,19 @@ public class ActiveShip {
                 container.update(true, false);
             }
 
-            boolean shouldBeWater = (block.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged());
+            // ИСПРАВЛЕНИЕ 2: Пустоты в воде. Если блок касается океана - заменяем его водой, а не воздухом.
+            boolean shouldBeWater = false;
+            if (block.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged()) {
+                shouldBeWater = true;
+            } else {
+                for (BlockFace face : new BlockFace[]{BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.DOWN}) {
+                    if (block.getRelative(face).getType() == Material.WATER) {
+                        shouldBeWater = true;
+                        break;
+                    }
+                }
+            }
+
             if (shouldBeWater) {
                 block.setType(Material.WATER, false);
             } else {
@@ -90,7 +99,9 @@ public class ActiveShip {
 
             BlockDisplay display = (BlockDisplay) currentAnchorCenter.getWorld().spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
             display.setBlock(snapshot.getBlockData());
-            display.setTeleportDuration(2);
+            
+            // ИСПРАВЛЕНИЕ 1 и 4: Длительность интерполяции 3 тика (перекрытие кадров для идеальной плавности)
+            display.setTeleportDuration(3);
 
             Transformation transform = new Transformation(
                     new Vector3f(-0.5f, 0f, -0.5f), 
@@ -106,20 +117,19 @@ public class ActiveShip {
         this.coreEntity.addPassenger(pilot);
 
         MoveShipPlugin plugin = JavaPlugin.getPlugin(MoveShipPlugin.class);
+        // Задача теперь работает каждые 2 тика (снижает лаги сервера, делает движение плавным)
         this.movementTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             
-            // Логика предохранителя для движения вперед/назад
             if (forwardStopTicks > 0) {
-                forwardStopTicks--;
-            } else if (forwardStopTicks == 0) {
+                forwardStopTicks -= 2;
+            } else if (forwardStopTicks <= 0 && forwardStopTicks != -1) {
                 currentForward = 0;
                 forwardStopTicks = -1;
             }
 
-            // Логика предохранителя для поворотов
             if (sideStopTicks > 0) {
-                sideStopTicks--;
-            } else if (sideStopTicks == 0) {
+                sideStopTicks -= 2;
+            } else if (sideStopTicks <= 0 && sideStopTicks != -1) {
                 currentSide = 0;
                 sideStopTicks = -1;
             }
@@ -130,7 +140,7 @@ public class ActiveShip {
             if (currentSide != 0) {
                 rotate(currentSide);
             }
-        }, 1L, 1L);
+        }, 0L, 2L);
     }
 
     public void setInput(float forward, float side) {
@@ -138,26 +148,20 @@ public class ActiveShip {
             this.currentForward = forward;
             this.forwardStopTicks = -1;
         } else if (this.forwardStopTicks == -1) {
-            this.forwardStopTicks = 5; // Ждем 5 тиков перед реальной остановкой
+            this.forwardStopTicks = 6;
         }
 
         if (side != 0) {
             this.currentSide = side;
             this.sideStopTicks = -1;
         } else if (this.sideStopTicks == -1) {
-            this.sideStopTicks = 5;
+            this.sideStopTicks = 6;
         }
     }
 
     private Location getCalculatedSeatLocation() {
-        double rad = Math.toRadians(currentShipYaw);
-        double cos = Math.cos(rad);
-        double sin = Math.sin(rad);
-
-        double newX = initialSeatOffset.getX() * cos - initialSeatOffset.getZ() * sin;
-        double newZ = initialSeatOffset.getX() * sin + initialSeatOffset.getZ() * cos;
-
-        Location seatLoc = currentAnchorCenter.clone().add(newX, initialSeatOffset.getY(), newZ);
+        // Поскольку игрок и есть центр вращения, его координаты не смещаются по дуге
+        Location seatLoc = currentAnchorCenter.clone();
         seatLoc.setYaw(initialPilotYaw + currentShipYaw);
         return seatLoc;
     }
@@ -247,7 +251,7 @@ public class ActiveShip {
         Location gridAnchor = new Location(
                 currentAnchorCenter.getWorld(),
                 Math.floor(currentAnchorCenter.getX()) + 0.5,
-                currentAnchorCenter.getY(),
+                Math.floor(currentAnchorCenter.getY()), 
                 Math.floor(currentAnchorCenter.getZ()) + 0.5
         );
 
@@ -270,7 +274,7 @@ public class ActiveShip {
             Vector offset = data.getRelativeOffset();
             int dx = (int) Math.round(offset.getX() * cos - offset.getZ() * sin);
             int dz = (int) Math.round(offset.getX() * sin + offset.getZ() * cos);
-            int dy = offset.getBlockY();
+            int dy = (int) Math.round(offset.getY());
 
             Block newBlock = gridAnchor.clone().add(dx, dy, dz).getBlock();
             BlockData blockData = data.getBlockData().clone();
