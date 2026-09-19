@@ -12,6 +12,7 @@ import org.bukkit.block.Container;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
 import org.bukkit.block.data.Orientable;
+import org.bukkit.block.data.Rotatable;
 import org.bukkit.block.data.Waterlogged;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.BlockDisplay;
@@ -43,7 +44,6 @@ public class ActiveShip {
     private final float initialPilotYaw;
 
     private float currentShipYaw = 0f;
-
     private float currentForward = 0f;
     private float currentSide = 0f;
     
@@ -55,11 +55,9 @@ public class ActiveShip {
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot = pilot;
         
-        // ИСПРАВЛЕНИЕ 2: Центр вращения ОБЯЗАН быть ровно по сетке (0.5), иначе при остановке блоки разорвет на части
         this.currentAnchorCenter = pilot.getLocation().getBlock().getLocation().add(0.5, 0.0, 0.5);
         this.initialPilotYaw = pilot.getLocation().getYaw();
 
-        // Смещение кресла пилота относительно идеального центра
         this.initialSeatOffset = pilot.getLocation().toVector().subtract(currentAnchorCenter.toVector());
         this.initialSeatOffset.setY(this.initialSeatOffset.getY() - 1.2); 
 
@@ -82,7 +80,6 @@ public class ActiveShip {
                 container.update(true, false);
             }
 
-            // ИСПРАВЛЕНИЕ 1: Больше никаких проверок соседей. Водой заливаем только затопленные полублоки.
             boolean shouldBeWater = (block.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged());
 
             if (shouldBeWater) {
@@ -268,7 +265,6 @@ public class ActiveShip {
 
             display.remove();
 
-            // Использование точных целых чисел гарантирует, что корабль больше не развалится
             Vector offset = data.getRelativeOffset();
             int dx = (int) Math.round(offset.getX() * cos - offset.getZ() * sin);
             int dz = (int) Math.round(offset.getX() * sin + offset.getZ() * cos);
@@ -277,6 +273,7 @@ public class ActiveShip {
             Block newBlock = gridAnchor.clone().add(dx, dy, dz).getBlock();
             BlockData blockData = data.getBlockData().clone();
 
+            // ПРИМЕНЯЕМ ВАШЕ ДОПОЛНЕНИЕ: Интеграция поворотов для всех типов блоков
             if (blockData instanceof Directional directional) {
                 BlockFace face = directional.getFacing();
                 for (int r = 0; r < rotations; r++) {
@@ -289,6 +286,14 @@ public class ActiveShip {
                     if (orientable.getAxis() == Axis.X) orientable.setAxis(Axis.Z);
                     else if (orientable.getAxis() == Axis.Z) orientable.setAxis(Axis.X);
                 }
+            }
+            // НОВОЕ: Интерфейс Rotatable для табличек, флагов и черепов
+            else if (blockData instanceof Rotatable rotatable) {
+                BlockFace face = rotatable.getRotation();
+                for (int r = 0; r < rotations; r++) {
+                    face = rotateFaceRight(face);
+                }
+                rotatable.setRotation(face);
             }
 
             if (newBlock.getType() == Material.WATER && blockData instanceof Waterlogged wl) {
@@ -316,8 +321,10 @@ public class ActiveShip {
         }
     }
 
+    // РАСШИРЕННАЯ МАТЕМАТИКА ПОВОРОТОВ: Добавлены все 16 осей, чтобы таблички вращались корректно
     private BlockFace rotateFaceRight(BlockFace face) {
         return switch (face) {
+            // Основные 8 направлений
             case NORTH -> BlockFace.EAST;
             case EAST -> BlockFace.SOUTH;
             case SOUTH -> BlockFace.WEST;
@@ -326,6 +333,18 @@ public class ActiveShip {
             case SOUTH_EAST -> BlockFace.SOUTH_WEST;
             case SOUTH_WEST -> BlockFace.NORTH_WEST;
             case NORTH_WEST -> BlockFace.NORTH_EAST;
+            
+            // Промежуточные 8 направлений (используются интерфейсом Rotatable для табличек)
+            case NORTH_NORTH_EAST -> BlockFace.EAST_SOUTH_EAST;
+            case EAST_SOUTH_EAST -> BlockFace.SOUTH_SOUTH_WEST;
+            case SOUTH_SOUTH_WEST -> BlockFace.WEST_NORTH_WEST;
+            case WEST_NORTH_WEST -> BlockFace.NORTH_NORTH_EAST;
+
+            case EAST_NORTH_EAST -> BlockFace.SOUTH_SOUTH_EAST;
+            case SOUTH_SOUTH_EAST -> BlockFace.WEST_SOUTH_WEST;
+            case WEST_SOUTH_WEST -> BlockFace.NORTH_NORTH_WEST;
+            case NORTH_NORTH_WEST -> BlockFace.EAST_NORTH_EAST;
+
             default -> face;
         };
     }
