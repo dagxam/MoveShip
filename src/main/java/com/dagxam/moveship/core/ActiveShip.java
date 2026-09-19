@@ -23,7 +23,6 @@ import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Transformation;
 import org.bukkit.util.Vector;
 import org.joml.AxisAngle4f;
-import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 import java.util.ArrayList;
@@ -36,32 +35,33 @@ public class ActiveShip {
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
 
-    // Плавность: тик = 1, шаг = 0.25 блока/тик (итого 5 блоков/сек)
-    private static final double SPEED = 0.25;
-    private static final float ROTATION_SPEED = 3.0f;
-
-    // Интерполяция BlockDisplay: длительность = 1 тик (совпадает с таском)
-    private static final int INTERP_DURATION = 2;
-    private static final int INTERP_DELAY = 0;
+    private static final double SPEED = 0.5;
+    private static final float ROTATION_SPEED = 6.0f;
 
     private Location currentAnchorCenter;
+    private final Vector initialSeatOffset; 
     private final float initialPilotYaw;
 
     private float currentShipYaw = 0f;
 
     private float currentForward = 0f;
     private float currentSide = 0f;
-
+    
     private int forwardStopTicks = -1;
     private int sideStopTicks = -1;
-
-    private final BukkitTask movementTask;
+    
+    private final BukkitTask movementTask; 
 
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot = pilot;
-
-        this.currentAnchorCenter = pilot.getLocation().clone();
+        
+        // ИСПРАВЛЕНИЕ 2: Центр вращения ОБЯЗАН быть ровно по сетке (0.5), иначе при остановке блоки разорвет на части
+        this.currentAnchorCenter = pilot.getLocation().getBlock().getLocation().add(0.5, 0.0, 0.5);
         this.initialPilotYaw = pilot.getLocation().getYaw();
+
+        // Смещение кресла пилота относительно идеального центра
+        this.initialSeatOffset = pilot.getLocation().toVector().subtract(currentAnchorCenter.toVector());
+        this.initialSeatOffset.setY(this.initialSeatOffset.getY() - 1.2); 
 
         Location seatLoc = getCalculatedSeatLocation();
         this.coreEntity = (ArmorStand) seatLoc.getWorld().spawnEntity(seatLoc, EntityType.ARMOR_STAND);
@@ -71,7 +71,6 @@ public class ActiveShip {
         this.coreEntity.setSmall(true);
 
         for (Block block : blocks) {
-            // Центр блока (Bukkit BlockDisplay позиционируется по углу, Transformation смещает на -0.5)
             Location blockCenter = block.getLocation().add(0.5, 0.0, 0.5);
             Vector offset = blockCenter.toVector().subtract(currentAnchorCenter.toVector());
 
@@ -83,8 +82,8 @@ public class ActiveShip {
                 container.update(true, false);
             }
 
-            // Вода — только если блок реально был waterlogged (не из-за соседей)
-            boolean shouldBeWater = block.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged();
+            // ИСПРАВЛЕНИЕ 1: Больше никаких проверок соседей. Водой заливаем только затопленные полублоки.
+            boolean shouldBeWater = (block.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged());
 
             if (shouldBeWater) {
                 block.setType(Material.WATER, false);
@@ -92,38 +91,36 @@ public class ActiveShip {
                 block.setType(Material.AIR, false);
             }
 
-            BlockDisplay display = (BlockDisplay) currentAnchorCenter.getWorld()
-                    .spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
+            BlockDisplay display = (BlockDisplay) currentAnchorCenter.getWorld().spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
             display.setBlock(snapshot.getBlockData());
+            display.setTeleportDuration(3);
 
-            // === ПЛАВНОСТЬ ===
-            display.setInterpolationDuration(INTERP_DURATION);
-            display.setInterpolationDelay(INTERP_DELAY);
-            display.setTeleportDuration(INTERP_DURATION);
-
-            // === ПОВОРОТ: rotation вокруг Y на текущий yaw корабля ===
-            display.setTransformation(buildTransformation(currentShipYaw));
-
+            Transformation transform = new Transformation(
+                    new Vector3f(-0.5f, 0f, -0.5f), 
+                    new AxisAngle4f(0, 0, 1, 0), 
+                    new Vector3f(1f, 1f, 1f), 
+                    new AxisAngle4f(0, 0, 1, 0)
+            );
+            display.setTransformation(transform);
+            
             displayEntities.add(display);
         }
 
         this.coreEntity.addPassenger(pilot);
 
         MoveShipPlugin plugin = JavaPlugin.getPlugin(MoveShipPlugin.class);
-
-        // Таск каждый тик — для плавности
         this.movementTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-
+            
             if (forwardStopTicks > 0) {
-                forwardStopTicks--;
-            } else if (forwardStopTicks == 0) {
+                forwardStopTicks -= 2;
+            } else if (forwardStopTicks <= 0 && forwardStopTicks != -1) {
                 currentForward = 0;
                 forwardStopTicks = -1;
             }
 
             if (sideStopTicks > 0) {
-                sideStopTicks--;
-            } else if (sideStopTicks == 0) {
+                sideStopTicks -= 2;
+            } else if (sideStopTicks <= 0 && sideStopTicks != -1) {
                 currentSide = 0;
                 sideStopTicks = -1;
             }
@@ -134,25 +131,7 @@ public class ActiveShip {
             if (currentSide != 0) {
                 rotate(currentSide);
             }
-        }, 0L, 1L);
-    }
-
-    /**
-     * Transformation для BlockDisplay:
-     * - translation -0.5 по X/Z — чтобы блок встал центром в точку сущности
-     * - rotation вокруг Y на -yaw (Minecraft yaw по часовой, JOML — против)
-     * - leftRotation = identity
-     */
-    private Transformation buildTransformation(float yawDegrees) {
-        float yawRad = (float) Math.toRadians(-yawDegrees);
-        Quaternionf rotation = new Quaternionf().rotateY(yawRad);
-
-        return new Transformation(
-                new Vector3f(-0.5f, 0f, -0.5f),
-                new AxisAngle4f(rotation),
-                new Vector3f(1f, 1f, 1f),
-                new AxisAngle4f(0f, 0f, 1f, 0f)
-        );
+        }, 0L, 2L);
     }
 
     public void setInput(float forward, float side) {
@@ -172,7 +151,14 @@ public class ActiveShip {
     }
 
     private Location getCalculatedSeatLocation() {
-        Location seatLoc = currentAnchorCenter.clone();
+        double rad = Math.toRadians(currentShipYaw);
+        double cos = Math.cos(rad);
+        double sin = Math.sin(rad);
+
+        double newX = initialSeatOffset.getX() * cos - initialSeatOffset.getZ() * sin;
+        double newZ = initialSeatOffset.getX() * sin + initialSeatOffset.getZ() * cos;
+
+        Location seatLoc = currentAnchorCenter.clone().add(newX, initialSeatOffset.getY(), newZ);
         seatLoc.setYaw(initialPilotYaw + currentShipYaw);
         return seatLoc;
     }
@@ -206,7 +192,7 @@ public class ActiveShip {
         } else {
             direction = new Vector(0, 0, 1);
         }
-
+        
         direction.multiply(forwardParams > 0 ? SPEED : -SPEED);
 
         Location targetAnchor = currentAnchorCenter.clone().add(direction);
@@ -237,21 +223,18 @@ public class ActiveShip {
         double cos = Math.cos(rad);
         double sin = Math.sin(rad);
 
-        Transformation transform = buildTransformation(currentShipYaw);
-
         for (int i = 0; i < displayEntities.size(); i++) {
             BlockDisplay display = displayEntities.get(i);
             ShipBlockData data = originalBlocks.get(i);
-
+            
             Vector offset = data.getRelativeOffset();
             double newX = offset.getX() * cos - offset.getZ() * sin;
             double newZ = offset.getX() * sin + offset.getZ() * cos;
 
             Location newLoc = currentAnchorCenter.clone().add(newX, offset.getY(), newZ);
-
-            // Сначала позиция, потом rotation — иначе BlockDisplay «моргает» на 1 кадр
+            newLoc.setYaw(currentShipYaw);
+            
             display.teleport(newLoc);
-            display.setTransformation(transform);
         }
     }
 
@@ -265,7 +248,7 @@ public class ActiveShip {
         Location gridAnchor = new Location(
                 currentAnchorCenter.getWorld(),
                 Math.floor(currentAnchorCenter.getX()) + 0.5,
-                Math.floor(currentAnchorCenter.getY()),
+                Math.floor(currentAnchorCenter.getY()), 
                 Math.floor(currentAnchorCenter.getZ()) + 0.5
         );
 
@@ -285,6 +268,7 @@ public class ActiveShip {
 
             display.remove();
 
+            // Использование точных целых чисел гарантирует, что корабль больше не развалится
             Vector offset = data.getRelativeOffset();
             int dx = (int) Math.round(offset.getX() * cos - offset.getZ() * sin);
             int dz = (int) Math.round(offset.getX() * sin + offset.getZ() * cos);
@@ -299,18 +283,16 @@ public class ActiveShip {
                     face = rotateFaceRight(face);
                 }
                 directional.setFacing(face);
-            } else if (blockData instanceof Orientable orientable) {
+            } 
+            else if (blockData instanceof Orientable orientable) {
                 if (rotations % 2 != 0) {
                     if (orientable.getAxis() == Axis.X) orientable.setAxis(Axis.Z);
                     else if (orientable.getAxis() == Axis.Z) orientable.setAxis(Axis.X);
                 }
             }
 
-            // Waterlogged восстанавливаем ДО setBlockData
-            if (blockData instanceof Waterlogged wl) {
-                boolean wasWater = data.getStateSnapshot().getBlockData() instanceof Waterlogged oldWl
-                        && oldWl.isWaterlogged();
-                wl.setWaterlogged(wasWater);
+            if (newBlock.getType() == Material.WATER && blockData instanceof Waterlogged wl) {
+                wl.setWaterlogged(true);
             }
 
             newBlock.setBlockData(blockData, false);
@@ -327,7 +309,7 @@ public class ActiveShip {
                     BlockState newState = newBlock.getState();
                     if (newState instanceof org.bukkit.block.Lectern newLectern) {
                         newLectern.getPersistentDataContainer().set(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE, (byte) 1);
-                        newLectern.update(true);
+                        newLectern.update(true); 
                     }
                 }
             }
