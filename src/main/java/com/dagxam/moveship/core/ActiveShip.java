@@ -12,9 +12,11 @@ import org.bukkit.block.Container;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.Directional;
+import org.bukkit.block.data.MultipleFacing;
 import org.bukkit.block.data.Orientable;
 import org.bukkit.block.data.Rotatable;
 import org.bukkit.block.data.Waterlogged;
+import org.bukkit.block.data.type.Wall;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.EntityType;
@@ -28,7 +30,10 @@ import org.joml.AxisAngle4f;
 import org.joml.Vector3f;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class ActiveShip {
@@ -44,7 +49,6 @@ public class ActiveShip {
     private final Vector initialSeatOffset; 
     private final float initialPilotYaw;
 
-    // Независимый угол курса корабля (0 - 360 градусов)
     private float currentShipYaw = 0f;
 
     private float currentForward = 0f;
@@ -65,7 +69,7 @@ public class ActiveShip {
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot = pilot;
         
-        this.currentAnchorCenter = anchorLocation.getBlock().getLocation().add(0.5, 0.0, 0.5);
+        this.currentAnchorCenter = pilot.getLocation().getBlock().getLocation().add(0.5, 0.0, 0.5);
         this.initialPilotYaw = pilot.getLocation().getYaw();
 
         this.initialSeatOffset = pilot.getLocation().toVector().subtract(currentAnchorCenter.toVector());
@@ -76,7 +80,6 @@ public class ActiveShip {
         this.coreEntity.setInvisible(true);
         this.coreEntity.setInvulnerable(true);
         this.coreEntity.setGravity(false);
-        // КРИТИЧНО: Убирает физический хитбокс кресла и предотвращает дрожание камеры игрока
         this.coreEntity.setMarker(true); 
         this.coreEntity.setSmall(true);
 
@@ -103,7 +106,6 @@ public class ActiveShip {
             BlockDisplay display = (BlockDisplay) currentAnchorCenter.getWorld().spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
             display.setBlock(snapshot.getBlockData());
             
-            // Настройка интерполяции под тикер (1 тик)
             display.setTeleportDuration(1);
             display.setInterpolationDuration(1);
             display.setInterpolationDelay(0);
@@ -199,7 +201,6 @@ public class ActiveShip {
     public void move(float forwardParams) {
         if (forwardParams == 0) return;
 
-        // ВЫЧИСЛЕНИЕ ПО КУРСУ КОРАБЛЯ: Движение строго по носу судна, независимо от поворота головы пилота
         double radians = Math.toRadians(currentShipYaw);
         double x = -Math.sin(radians);
         double z = Math.cos(radians);
@@ -291,6 +292,7 @@ public class ActiveShip {
             Block newBlock = gridAnchor.clone().add(dx, dy, dz).getBlock();
             BlockData blockData = data.getBlockData().clone();
 
+            // 1. Поворот Directional (сундуки, ступени, печи)
             if (blockData instanceof Directional directional) {
                 BlockFace face = directional.getFacing();
                 for (int r = 0; r < rotations; r++) {
@@ -300,12 +302,14 @@ public class ActiveShip {
                     directional.setFacing(face);
                 }
             } 
+            // 2. Поворот Orientable (брёвна)
             else if (blockData instanceof Orientable orientable) {
                 if (rotations % 2 != 0) {
                     if (orientable.getAxis() == Axis.X) orientable.setAxis(Axis.Z);
                     else if (orientable.getAxis() == Axis.Z) orientable.setAxis(Axis.X);
                 }
             }
+            // 3. Поворот Rotatable (таблички, головы, баннеры)
             else if (blockData instanceof Rotatable rotatable) {
                 BlockFace currentFace = rotatable.getRotation();
                 int index = ROTATABLE_FACES.indexOf(currentFace);
@@ -316,7 +320,38 @@ public class ActiveShip {
                     rotatable.setRotation(ROTATABLE_FACES.get(newIndex));
                 }
             }
+            // 4. Поворот MultipleFacing (заборы, стеклянные панели, железные решётки)
+            else if (blockData instanceof MultipleFacing multipleFacing) {
+                Set<BlockFace> currentFaces = new HashSet<>(multipleFacing.getFaces());
+                for (BlockFace face : multipleFacing.getAllowedFaces()) {
+                    multipleFacing.setFace(face, false);
+                }
+                for (BlockFace face : currentFaces) {
+                    BlockFace rotated = face;
+                    for (int r = 0; r < rotations; r++) {
+                        rotated = rotateFaceRight(rotated);
+                    }
+                    if (multipleFacing.getAllowedFaces().contains(rotated)) {
+                        multipleFacing.setFace(rotated, true);
+                    }
+                }
+            }
+            // 5. Поворот Wall (каменные ограды)
+            else if (blockData instanceof Wall wall) {
+                Map<BlockFace, Wall.Height> heights = new HashMap<>();
+                for (BlockFace face : List.of(BlockFace.NORTH, BlockFace.EAST, BlockFace.SOUTH, BlockFace.WEST)) {
+                    heights.put(face, wall.getHeight(face));
+                }
+                for (Map.Entry<BlockFace, Wall.Height> entry : heights.entrySet()) {
+                    BlockFace rotated = entry.getKey();
+                    for (int r = 0; r < rotations; r++) {
+                        rotated = rotateFaceRight(rotated);
+                    }
+                    wall.setHeight(rotated, entry.getValue());
+                }
+            }
 
+            // Коррекция двойных сундуков при развороте на 180 градусов
             if (blockData instanceof org.bukkit.block.data.type.Chest chest) {
                 if (snappedYaw == 180 && chest.getType() != org.bukkit.block.data.type.Chest.Type.SINGLE) {
                     chest.setType(chest.getType() == org.bukkit.block.data.type.Chest.Type.LEFT 
@@ -341,11 +376,13 @@ public class ActiveShip {
             }
         }
 
+        // Проход 1: каркас, пол, основания и заборы
         for (PreparedBlock pb : passOne) {
             pb.targetBlock().setBlockData(pb.blockData(), false);
             applyContainerData(pb.targetBlock(), pb.snapshot());
         }
 
+        // Проход 2: верхние половины дверей/кроватей и навесной декор
         for (PreparedBlock pb : passTwo) {
             pb.targetBlock().setBlockData(pb.blockData(), false);
             applyContainerData(pb.targetBlock(), pb.snapshot());
