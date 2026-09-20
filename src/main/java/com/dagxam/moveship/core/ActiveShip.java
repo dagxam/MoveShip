@@ -44,13 +44,9 @@ public class ActiveShip {
 
     private final Player pilot;
     private final MoveShipPlugin plugin;
-
-    // Корневой якорь — ВСЕ BlockDisplay являются его пассажирами
-    // Телепортируем только rootEntity — блоки едут за ним монолитом
-    private final ArmorStand rootEntity;
     private final ArmorStand seatEntity;
 
-    private final List<ShipBlockData> originalBlocks = new ArrayList<>();
+    private final List<ShipBlockData> originalBlocks  = new ArrayList<>();
     private final List<BlockDisplay>  displayEntities = new ArrayList<>();
 
     private static final double MAX_FWD   = 0.40;
@@ -101,7 +97,7 @@ public class ActiveShip {
         Block blockUnder = pilot.getLocation().getBlock().getRelative(BlockFace.DOWN);
         this.activationBlockY = blockUnder.getY() + 1.0;
 
-        // ── Ватерлиния ──────────────────────────────────────────────────────
+        // Ватерлиния
         int seaLevel = Integer.MIN_VALUE;
         for (Block b : blocks) {
             for (BlockFace f : new BlockFace[]{
@@ -124,35 +120,18 @@ public class ActiveShip {
                 if (b.getY() <= seaLevel) submergedWake.add(b);
         }
 
-        // ── Корневой якорь в центре корабля ─────────────────────────────────
-        Location rootLoc = anchorCenter.clone();
-        rootLoc.setYaw(0f);
-        rootLoc.setPitch(0f);
-
-        rootEntity = rootLoc.getWorld().spawn(rootLoc, ArmorStand.class, e -> {
-            e.setInvisible(true);
-            e.setInvulnerable(true);
-            e.setGravity(false);
-            e.setMarker(true);
-            e.setSmall(true);
-            e.setBasePlate(false);
-            e.setPersistent(false);
-        });
-
-        // ── Сохраняем блоки, удаляем физику, спавним Display как пассажиров root ──
+        // Сохраняем блоки и спавним Display
         for (Block block : blocks) {
-            Location bc     = block.getLocation().add(0.5, 0.0, 0.5);
-            Vector   offset = bc.toVector().subtract(anchorCenter.toVector());
-            BlockData bd    = block.getBlockData().clone();
+            Location  bc     = block.getLocation().add(0.5, 0.0, 0.5);
+            Vector    offset = bc.toVector().subtract(anchorCenter.toVector());
+            BlockData bd     = block.getBlockData().clone();
 
-            // Сохраняем инвентарь ДО удаления блока
             ItemStack[] savedItems = null;
             BlockState  snapshot;
 
             if (block.getState() instanceof Container cnt) {
-                // Сохраняем через getInventory() — работает для всех контейнеров
+                // ФИКС ВЕЩЕЙ: сохраняем через getInventory() для всех контейнеров
                 savedItems = deepCopy(cnt.getInventory());
-                // Очищаем чтобы вещи не выпали при setType(AIR)
                 cnt.getInventory().clear();
                 cnt.update(true, false);
                 snapshot = block.getState(true);
@@ -163,38 +142,28 @@ public class ActiveShip {
             originalBlocks.add(new ShipBlockData(offset.clone(), bd, snapshot, savedItems));
             block.setType(Material.AIR, false);
 
-            // Спавним Display В ПОЗИЦИИ ROOT (не в позиции блока!)
-            // Смещение задаём через Transformation — это локальные координаты
-            final Vector finalOffset = offset.clone();
-            BlockDisplay disp = rootLoc.getWorld().spawn(rootLoc, BlockDisplay.class, e -> {
+            // ФИКС ДЁРГАНИЯ: спавним Display на реальной мировой позиции блока
+            // setTeleportDuration(1) = клиент интерполирует между тиками на 60 FPS
+            // Это единственный способ получить плавность как у лодки
+            BlockDisplay disp = bc.getWorld().spawn(bc, BlockDisplay.class, e -> {
                 e.setBlock(bd);
                 e.setPersistent(false);
-                e.setTeleportDuration(0);
+                // teleportDuration=1: при каждом teleport() клиент плавно
+                // анимирует переход за 1 тик (50мс) вместо моментального прыжка
+                e.setTeleportDuration(1);
                 e.setInterpolationDuration(0);
                 e.setInterpolationDelay(0);
-                // Локальное смещение блока от центра корабля
                 e.setTransformation(new Transformation(
-                        new Vector3f(
-                            (float) finalOffset.getX() - 0.5f,
-                            (float) finalOffset.getY(),
-                            (float) finalOffset.getZ() - 0.5f
-                        ),
+                        new Vector3f(-0.5f, 0f, -0.5f),
                         new Quaternionf(),
                         new Vector3f(1f, 1f, 1f),
                         new Quaternionf()
                 ));
             });
-
-            // КРИТИЧНО: делаем Display пассажиром root
-            // Теперь все блоки двигаются как ОДИН объект
-            rootEntity.addPassenger(disp);
             displayEntities.add(disp);
         }
 
-        // ── Кресло пилота ────────────────────────────────────────────────────
-        // Y кресла: activationBlockY это верхняя грань блока палубы
-        // ArmorStand small=true: пассажир сидит на Y + 0.4875
-        // Чтобы игрок был на уровне activationBlockY нужно: seatY = activationBlockY - 0.4875
+        // Кресло пилота
         Location seatLoc = anchorCenter.clone();
         seatLoc.setY(activationBlockY - 0.5);
         seatLoc.setYaw(shipYaw);
@@ -222,7 +191,7 @@ public class ActiveShip {
     }
 
     private void tick() {
-        if (!pilot.isOnline() || !rootEntity.isValid()) {
+        if (!pilot.isOnline() || !seatEntity.isValid()) {
             task.cancel();
             return;
         }
@@ -273,23 +242,55 @@ public class ActiveShip {
 
         float  delta = shipYaw - initialYaw;
         double rad   = Math.toRadians(delta);
+        double cos   = Math.cos(rad);
+        double sin   = Math.sin(rad);
 
-        // ФИКС БЛОКОВ: телепортируем ТОЛЬКО rootEntity
-        // Все пассажиры-BlockDisplay двигаются автоматически как монолит
-        Location rootTarget = anchorCenter.clone();
-        rootTarget.setYaw(delta); // поворот корабля через yaw root
-        rootTarget.setPitch(0f);
-        rootEntity.teleport(rootTarget);
+        // ФИКС ДЁРГАНИЯ:
+        // Телепортируем каждый BlockDisplay напрямую на его мировую позицию.
+        // teleportDuration=1 уже установлен при спавне — клиент сам
+        // интерполирует движение между старой и новой позицией плавно.
+        // Трансформацию обновляем ТОЛЬКО при повороте (когда delta изменилась).
+        for (int i = 0; i < displayEntities.size(); i++) {
+            BlockDisplay disp = displayEntities.get(i);
+            if (!disp.isValid()) continue;
 
-        // Кресло пилота
+            Vector off = originalBlocks.get(i).getRelativeOffset();
+            double nx  = off.getX() * cos - off.getZ() * sin;
+            double nz  = off.getX() * sin + off.getZ() * cos;
+
+            // Мировая позиция блока с учётом поворота
+            Location target = anchorCenter.clone().add(nx, off.getY(), nz);
+            target.setYaw(0f);
+            target.setPitch(0f);
+
+            // Один teleport() за тик — клиент интерполирует через teleportDuration
+            disp.teleport(target);
+        }
+
+        // Обновляем Transformation только при повороте корабля
+        if (currentTurn != 0f) {
+            Quaternionf rot = new Quaternionf().rotateY((float) Math.toRadians(-delta));
+            Vector3f    tr  = new Vector3f(-0.5f, 0f, -0.5f);
+            rot.transform(tr);
+            Transformation tf = new Transformation(
+                    tr, rot, new Vector3f(1f, 1f, 1f), new Quaternionf());
+
+            for (BlockDisplay disp : displayEntities) {
+                if (disp.isValid()) {
+                    disp.setInterpolationDelay(0);
+                    disp.setInterpolationDuration(1);
+                    disp.setTransformation(tf);
+                }
+            }
+        }
+
+        // Кресло
         Location seatTarget = anchorCenter.clone();
         seatTarget.setY(activationBlockY - 0.5);
         seatTarget.setYaw(shipYaw);
         seatTarget.setPitch(0f);
         seatEntity.teleport(seatTarget);
 
-        double cos = Math.cos(rad);
-        double sin = Math.sin(rad);
         fillWater(cos, sin);
     }
 
@@ -375,46 +376,38 @@ public class ActiveShip {
             else             pass1.add(pb);
         }
 
-        // Проход 1: несущие блоки
         for (PB pb : pass1) {
             boolean phys = pb.bd() instanceof MultipleFacing || pb.bd() instanceof Wall;
             pb.block().setType(pb.bd().getMaterial(), false);
             pb.block().setBlockData(pb.bd(), phys);
         }
-        // Проход 2: навесные блоки
         for (PB pb : pass2) {
             pb.block().setType(pb.bd().getMaterial(), false);
             pb.block().setBlockData(pb.bd(), false);
         }
 
-        // Проход 3: контейнеры — сразу + через 1 тик + через 3 тика
-        // Тройное применение гарантирует что TileEntity успел создаться
+        // ФИКС ВЕЩЕЙ: применяем сразу после установки блоков
         for (PB pb : pass3) applyContainer(pb.block(), pb.snap2(), pb.items());
 
+        // Повтор через 1 тик: для бочек и печей которым нужен один тик
+        // чтобы TileEntity полностью инициализировался в Paper 26.3
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             for (PB pb : pass3) applyContainer(pb.block(), pb.snap2(), pb.items());
         }, 1L);
 
+        // Повтор через 5 тиков: финальная гарантия для всех контейнеров
+        // включая двойные сундуки и печи с топливом
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             for (PB pb : pass3) applyContainer(pb.block(), pb.snap2(), pb.items());
-        }, 3L);
+        }, 5L);
 
-        // Ставим игрока на палубу
         double safeY = findSafeDeckY(pilot.getLocation(), grid, csr, snr);
         Location land = pilot.getLocation().clone();
         land.setY(safeY);
         pilot.teleport(land);
 
-        // Удаляем Display и root
-        for (BlockDisplay d : displayEntities) {
-            if (d.isValid()) {
-                rootEntity.removePassenger(d);
-                d.remove();
-            }
-        }
+        displayEntities.forEach(d -> { if (d.isValid()) d.remove(); });
         displayEntities.clear();
-
-        if (rootEntity.isValid()) rootEntity.remove();
         if (seatEntity.isValid()) seatEntity.remove();
     }
 
@@ -534,19 +527,28 @@ public class ActiveShip {
             || s instanceof org.bukkit.block.Lectern;
     }
 
+    // ФИКС ВЕЩЕЙ: получаем свежий BlockState после установки блока
+    // и записываем инвентарь через живой TileEntity
     private void applyContainer(Block block, BlockState snap, ItemStack[] items) {
         if (items != null) {
+            // Принудительно обновляем чанк перед чтением состояния
+            block.getWorld().getChunkAt(block.getLocation()).load(true);
+
             BlockState fresh = block.getState();
             if (fresh instanceof Container c) {
                 Inventory inv = c.getInventory();
-                ItemStack[] fill = new ItemStack[inv.getSize()];
-                for (int i = 0; i < Math.min(items.length, fill.length); i++) {
-                    if (items[i] != null) fill[i] = items[i].clone();
+                // Очищаем сначала чтобы не было дублей при повторном вызове
+                inv.clear();
+                for (int i = 0; i < Math.min(items.length, inv.getSize()); i++) {
+                    if (items[i] != null) {
+                        inv.setItem(i, items[i].clone());
+                    }
                 }
-                inv.setContents(fill);
+                // force=true: записывает данные напрямую в NBT чанка
                 c.update(true, false);
             }
         }
+
         if (snap instanceof org.bukkit.block.Lectern old
                 && old.getPersistentDataContainer()
                       .has(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE)
