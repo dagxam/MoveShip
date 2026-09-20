@@ -12,7 +12,6 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDismountEvent;
 import org.bukkit.event.player.PlayerInputEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
-import org.bukkit.input.PlayerInput;
 
 public class ShipMovementListener implements Listener {
 
@@ -25,13 +24,11 @@ public class ShipMovementListener implements Listener {
         ActiveShip ship = ShipManager.getShip(player);
         if (ship == null) return;
 
-        PlayerInput input = event.getInput();
-
         ship.setInput(
-            input.forward(),
-            input.backward(),
-            input.left(),
-            input.right()
+            event.getInput().forward(),
+            event.getInput().backward(),
+            event.getInput().left(),
+            event.getInput().right()
         );
     }
 
