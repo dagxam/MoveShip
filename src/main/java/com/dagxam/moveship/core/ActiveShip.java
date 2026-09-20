@@ -47,23 +47,23 @@ public class ActiveShip {
     private final MoveShipPlugin plugin;
     private final ArmorStand seatEntity;
 
-    private final List<ShipBlockData> originalBlocks = new ArrayList<>();
+    private final List<ShipBlockData> originalBlocks  = new ArrayList<>();
     private final List<BlockDisplay>  displayEntities = new ArrayList<>();
 
-    // ── физика как у лодки ──────────────────────────────────────────────────
-    private static final double MAX_FWD    = 0.40;
-    private static final double MAX_BACK   = 0.15;
-    private static final double ACCEL      = 0.025;  // плавный разгон
-    private static final double DECEL      = 0.88;   // инерция (трение воды)
+    // физика как у лодки
+    private static final double MAX_FWD   = 0.40;
+    private static final double MAX_BACK  = 0.15;
+    private static final double ACCEL     = 0.025;
+    private static final double DECEL     = 0.88;
 
-    private static final float TURN_MAX    = 3.0f;
-    private static final float TURN_ACCEL  = 0.4f;
-    private static final float TURN_DECEL  = 0.78f;
+    private static final float TURN_MAX   = 3.0f;
+    private static final float TURN_ACCEL = 0.4f;
+    private static final float TURN_DECEL = 0.78f;
 
-    // ── ввод (обновляется из PlayerInputEvent каждый тик) ───────────────────
+    // ввод — обновляется из PlayerInputEvent каждый тик
     private boolean kFwd, kBack, kLeft, kRight;
 
-    // ── состояние ───────────────────────────────────────────────────────────
+    // состояние
     private Location anchorCenter;
     private float    shipYaw;
     private final float initialYaw;
@@ -75,7 +75,7 @@ public class ActiveShip {
     private final Set<Block> submergedWake = new HashSet<>();
     private record BP(int x, int y, int z) {}
 
-    // Высота блока на котором стоял игрок при активации
+    // Y блока палубы под ногами пилота при активации
     private final double activationBlockY;
 
     private static final List<BlockFace> ROT16 = List.of(
@@ -89,6 +89,7 @@ public class ActiveShip {
             BlockFace.NORTH_WEST,      BlockFace.NORTH_NORTH_WEST
     );
 
+    // ════════════════════════════════════════════════════════════════════════
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot  = pilot;
         this.plugin = JavaPlugin.getPlugin(MoveShipPlugin.class);
@@ -99,12 +100,11 @@ public class ActiveShip {
         this.shipYaw    = pilot.getLocation().getYaw();
         this.initialYaw = this.shipYaw;
 
-        // Запоминаем Y блока под ногами игрока при активации
-        // Это нужно чтобы кресло было ровно на палубе
-        Block blockUnderPilot = pilot.getLocation().getBlock().getRelative(BlockFace.DOWN);
-        this.activationBlockY = blockUnderPilot.getY() + 1.0;
+        // Y верхней грани блока под ногами пилота
+        Block blockUnder = pilot.getLocation().getBlock().getRelative(BlockFace.DOWN);
+        this.activationBlockY = blockUnder.getY() + 1.0;
 
-        // ── Ватерлиния ──────────────────────────────────────────────────────
+        // ── ватерлиния ──────────────────────────────────────────────────────
         int seaLevel = Integer.MIN_VALUE;
         for (Block b : blocks) {
             for (BlockFace f : new BlockFace[]{
@@ -127,11 +127,11 @@ public class ActiveShip {
                 if (b.getY() <= seaLevel) submergedWake.add(b);
         }
 
-        // ── Сохраняем и удаляем физические блоки, спавним Display ──────────
+        // ── сохраняем блоки, удаляем физику, спавним Display ────────────────
         for (Block block : blocks) {
-            Location bc     = block.getLocation().add(0.5, 0.0, 0.5);
-            Vector   offset = bc.toVector().subtract(anchorCenter.toVector());
-            BlockData bd    = block.getBlockData().clone();
+            Location  bc     = block.getLocation().add(0.5, 0.0, 0.5);
+            Vector    offset = bc.toVector().subtract(anchorCenter.toVector());
+            BlockData bd     = block.getBlockData().clone();
 
             ItemStack[] savedItems = null;
             BlockState  snapshot;
@@ -152,11 +152,9 @@ public class ActiveShip {
             BlockDisplay disp = bc.getWorld().spawn(bc, BlockDisplay.class, e -> {
                 e.setBlock(bd);
                 e.setPersistent(false);
-                // teleportDuration=1 = клиент интерполирует 60 FPS между тиками
                 e.setTeleportDuration(1);
                 e.setInterpolationDuration(0);
                 e.setInterpolationDelay(0);
-                // Центрируем блок (BlockDisplay спавнится в углу)
                 e.setTransformation(new Transformation(
                         new Vector3f(-0.5f, 0f, -0.5f),
                         new Quaternionf(),
@@ -167,9 +165,8 @@ public class ActiveShip {
             displayEntities.add(disp);
         }
 
-        // ── Кресло пилота ────────────────────────────────────────────────────
-        // Спавним ПОСЛЕ удаления блоков
-        // Y = activationBlockY - 0.6 чтобы игрок сидел РОВНО на палубе
+        // ── кресло пилота ────────────────────────────────────────────────────
+        // спавним ПОСЛЕ удаления блоков, Y = палуба - 0.6
         Location seatLoc = anchorCenter.clone();
         seatLoc.setY(activationBlockY - 0.6);
         seatLoc.setYaw(shipYaw);
@@ -186,11 +183,13 @@ public class ActiveShip {
         });
         seatEntity.addPassenger(pilot);
 
-        // ── Такт движка каждый тик ───────────────────────────────────────────
+        // ── движок каждый тик ───────────────────────────────────────────────
         task = Bukkit.getScheduler().runTaskTimer(plugin, this::tick, 1L, 1L);
     }
 
-    // ── Ввод из PlayerInputEvent (Paper 1.21+) ───────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+    // Ввод из PlayerInputEvent — Paper 1.21+
+    // ════════════════════════════════════════════════════════════════════════
     public void setInput(boolean forward, boolean backward, boolean left, boolean right) {
         this.kFwd   = forward;
         this.kBack  = backward;
@@ -198,25 +197,26 @@ public class ActiveShip {
         this.kRight = right;
     }
 
-    // ── Тик движка ──────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+    // Тик движка
+    // ════════════════════════════════════════════════════════════════════════
     private void tick() {
         if (!pilot.isOnline() || !seatEntity.isValid()) {
             task.cancel();
             return;
         }
 
-        // ── Скорость (плавная инерция как у лодки) ──
+        // скорость
         if (kFwd && !kBack) {
             currentSpeed = Math.min(MAX_FWD, currentSpeed + ACCEL);
         } else if (kBack && !kFwd) {
             currentSpeed = Math.max(-MAX_BACK, currentSpeed - ACCEL);
         } else {
-            // Плавное торможение — инерция воды
             currentSpeed *= DECEL;
             if (Math.abs(currentSpeed) < 0.001) currentSpeed = 0.0;
         }
 
-        // ── Поворот (A = влево, D = вправо) ──
+        // поворот: A = влево (yaw−), D = вправо (yaw+)
         if (kLeft && !kRight) {
             currentTurn = Math.max(-TURN_MAX, currentTurn - TURN_ACCEL);
         } else if (kRight && !kLeft) {
@@ -228,21 +228,19 @@ public class ActiveShip {
 
         boolean moved = false;
 
-        // ── Применяем поворот ──
         if (currentTurn != 0f) {
             float nextYaw = norm(shipYaw + currentTurn);
             if (canMoveTo(anchorCenter, nextYaw)) {
                 shipYaw = nextYaw;
                 moved = true;
             } else {
-                currentTurn = 0f;
+                currentTurn  = 0f;
                 currentSpeed *= 0.5;
             }
         }
 
-        // ── Применяем движение ──
         if (Math.abs(currentSpeed) > 0.001) {
-            Vector dir  = yawDir(shipYaw).multiply(currentSpeed);
+            Vector   dir  = yawDir(shipYaw).multiply(currentSpeed);
             Location next = anchorCenter.clone().add(dir);
             if (canMoveTo(next, shipYaw)) {
                 anchorCenter = next;
@@ -254,18 +252,16 @@ public class ActiveShip {
 
         if (!moved) return;
 
-        // ── Обновляем позиции всех BlockDisplay ──
+        // пересчёт позиций Display
         float  delta = shipYaw - initialYaw;
         double rad   = Math.toRadians(delta);
         double cos   = Math.cos(rad);
         double sin   = Math.sin(rad);
 
-        // Quaternion поворота для Transformation
         Quaternionf rot = new Quaternionf().rotateY((float) Math.toRadians(-delta));
         Vector3f    tr  = new Vector3f(-0.5f, 0f, -0.5f);
         rot.transform(tr);
-        Transformation tf = new Transformation(tr, rot,
-                new Vector3f(1f, 1f, 1f), new Quaternionf());
+        Transformation tf = new Transformation(tr, rot, new Vector3f(1f, 1f, 1f), new Quaternionf());
 
         for (int i = 0; i < displayEntities.size(); i++) {
             BlockDisplay disp = displayEntities.get(i);
@@ -279,18 +275,14 @@ public class ActiveShip {
             target.setYaw(0f);
             target.setPitch(0f);
 
-            // teleportDuration=1 → плавная интерполяция клиентом
             disp.teleport(target);
-
-            // Обновляем поворот через Transformation
             disp.setInterpolationDelay(0);
             disp.setInterpolationDuration(1);
             disp.setTransformation(tf);
         }
 
-        // ── Двигаем кресло ──
+        // двигаем кресло (Y фиксирован на высоте палубы)
         Location seatTarget = anchorCenter.clone();
-        // Фиксируем Y кресла на высоте палубы (не меняется при движении)
         seatTarget.setY(activationBlockY - 0.6);
         seatTarget.setYaw(shipYaw);
         seatTarget.setPitch(0f);
@@ -299,6 +291,7 @@ public class ActiveShip {
         fillWater(cos, sin);
     }
 
+    // ════════════════════════════════════════════════════════════════════════
     private boolean canMoveTo(Location target, float yaw) {
         float  delta = yaw - initialYaw;
         double rad   = Math.toRadians(delta);
@@ -336,7 +329,9 @@ public class ActiveShip {
         });
     }
 
-    // ── Парковка ────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+    // Парковка
+    // ════════════════════════════════════════════════════════════════════════
     public void restoreBlocks() {
         if (task != null) task.cancel();
 
@@ -352,11 +347,11 @@ public class ActiveShip {
                 Math.floor(anchorCenter.getY()),
                 Math.floor(anchorCenter.getZ()) + 0.5);
 
-        float delta = shipYaw - initialYaw;
-        int   snap  = Math.floorMod(Math.round(delta / 90f) * 90, 360);
-        int   rots  = snap / 90;
-        double csr  = Math.round(Math.cos(Math.toRadians(snap)));
-        double snr  = Math.round(Math.sin(Math.toRadians(snap)));
+        float  delta = shipYaw - initialYaw;
+        int    snap  = Math.floorMod(Math.round(delta / 90f) * 90, 360);
+        int    rots  = snap / 90;
+        double csr   = Math.round(Math.cos(Math.toRadians(snap)));
+        double snr   = Math.round(Math.sin(Math.toRadians(snap)));
 
         record PB(Block block, BlockData bd, BlockState snap2, ItemStack[] items) {}
         List<PB> pass1 = new ArrayList<>(),
@@ -382,32 +377,27 @@ public class ActiveShip {
             else             pass1.add(pb);
         }
 
-        // Проход 1: несущие блоки
         for (PB pb : pass1) {
             boolean phys = pb.bd() instanceof MultipleFacing
                         || pb.bd() instanceof Wall;
             pb.block().setType(pb.bd().getMaterial(), false);
             pb.block().setBlockData(pb.bd(), phys);
         }
-        // Проход 2: навесные (фонари, кнопки, таблички)
         for (PB pb : pass2) {
             pb.block().setType(pb.bd().getMaterial(), false);
             pb.block().setBlockData(pb.bd(), false);
         }
-        // Проход 3: контейнеры
         for (PB pb : pass3) applyContainer(pb.block(), pb.snap2(), pb.items());
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             for (PB pb : pass3) applyContainer(pb.block(), pb.snap2(), pb.items());
         }, 1L);
 
-        // ── Ставим игрока на палубу ──────────────────────────────────────────
-        // Ищем самый высокий блок корабля под ногами игрока
+        // ставим игрока на палубу
         double safeY = findSafeDeckY(pilot.getLocation(), grid, csr, snr);
         Location land = pilot.getLocation().clone();
         land.setY(safeY);
         pilot.teleport(land);
 
-        // Удаляем Display после телепорта игрока
         displayEntities.forEach(d -> { if (d.isValid()) d.remove(); });
         displayEntities.clear();
         if (seatEntity.isValid()) seatEntity.remove();
@@ -435,7 +425,9 @@ public class ActiveShip {
         return top != Integer.MIN_VALUE ? top + 1.0 : Math.floor(pilotLoc.getY()) + 1.0;
     }
 
-    // ── Вспомогательные ─────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+    // Вспомогательные
+    // ════════════════════════════════════════════════════════════════════════
     private static float norm(float y) {
         y %= 360f;
         return y < 0 ? y + 360f : y;
@@ -532,7 +524,7 @@ public class ActiveShip {
 
     private void applyContainer(Block block, BlockState snap, ItemStack[] items) {
         if (items != null && block.getState() instanceof Container c) {
-            Inventory inv  = rawInventory(c);
+            Inventory   inv  = rawInventory(c);
             ItemStack[] fill = new ItemStack[inv.getSize()];
             for (int i = 0; i < Math.min(items.length, fill.length); i++)
                 if (items[i] != null) fill[i] = items[i].clone();
