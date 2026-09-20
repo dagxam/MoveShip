@@ -9,8 +9,8 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Container;
-import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.Directional;
 import org.bukkit.block.data.Orientable;
 import org.bukkit.block.data.Rotatable;
@@ -28,9 +28,7 @@ import org.joml.AxisAngle4f;
 import org.joml.Vector3f;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 public class ActiveShip {
@@ -39,13 +37,14 @@ public class ActiveShip {
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
 
-    private static final double SPEED = 0.5;
-    private static final float ROTATION_SPEED = 6.0f;
+    private static final double SPEED = 0.3;
+    private static final float ROTATION_SPEED = 3.0f;
 
     private Location currentAnchorCenter;
     private final Vector initialSeatOffset; 
     private final float initialPilotYaw;
 
+    // Независимый угол курса корабля (0 - 360 градусов)
     private float currentShipYaw = 0f;
 
     private float currentForward = 0f;
@@ -56,18 +55,17 @@ public class ActiveShip {
     
     private final BukkitTask movementTask; 
 
-    // Секрет плавности: 16 точных направлений для Rotatable элементов (таблички, головы, баннеры)
     private static final List<BlockFace> ROTATABLE_FACES = List.of(
-            BlockFace.NORTH, BlockFace.NORTH_NORTH_EAST, BlockFace.NORTH_EAST, BlockFace.EAST_NORTH_EAST,
-            BlockFace.EAST, BlockFace.EAST_SOUTH_EAST, BlockFace.SOUTH_EAST, BlockFace.SOUTH_SOUTH_EAST,
-            BlockFace.SOUTH, BlockFace.SOUTH_SOUTH_WEST, BlockFace.SOUTH_WEST, BlockFace.WEST_SOUTH_WEST,
-            BlockFace.WEST, BlockFace.WEST_NORTH_WEST, BlockFace.NORTH_WEST, BlockFace.NORTH_NORTH_WEST
+        BlockFace.NORTH, BlockFace.NORTH_NORTH_EAST, BlockFace.NORTH_EAST, BlockFace.EAST_NORTH_EAST,
+        BlockFace.EAST, BlockFace.EAST_SOUTH_EAST, BlockFace.SOUTH_EAST, BlockFace.SOUTH_SOUTH_EAST,
+        BlockFace.SOUTH, BlockFace.SOUTH_SOUTH_WEST, BlockFace.SOUTH_WEST, BlockFace.WEST_SOUTH_WEST,
+        BlockFace.WEST, BlockFace.WEST_NORTH_WEST, BlockFace.NORTH_WEST, BlockFace.NORTH_NORTH_WEST
     );
 
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot = pilot;
         
-        this.currentAnchorCenter = pilot.getLocation().getBlock().getLocation().add(0.5, 0.0, 0.5);
+        this.currentAnchorCenter = anchorLocation.getBlock().getLocation().add(0.5, 0.0, 0.5);
         this.initialPilotYaw = pilot.getLocation().getYaw();
 
         this.initialSeatOffset = pilot.getLocation().toVector().subtract(currentAnchorCenter.toVector());
@@ -78,6 +76,8 @@ public class ActiveShip {
         this.coreEntity.setInvisible(true);
         this.coreEntity.setInvulnerable(true);
         this.coreEntity.setGravity(false);
+        // КРИТИЧНО: Убирает физический хитбокс кресла и предотвращает дрожание камеры игрока
+        this.coreEntity.setMarker(true); 
         this.coreEntity.setSmall(true);
 
         for (Block block : blocks) {
@@ -100,11 +100,12 @@ public class ActiveShip {
                 block.setType(Material.AIR, false);
             }
 
-            // Секрет идеальной плавности BlockDisplay: значения строго согласованы с таймером (2 тика)
             BlockDisplay display = (BlockDisplay) currentAnchorCenter.getWorld().spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
             display.setBlock(snapshot.getBlockData());
-            display.setTeleportDuration(2);
-            display.setInterpolationDuration(2);
+            
+            // Настройка интерполяции под тикер (1 тик)
+            display.setTeleportDuration(1);
+            display.setInterpolationDuration(1);
             display.setInterpolationDelay(0);
 
             Transformation transform = new Transformation(
@@ -124,15 +125,15 @@ public class ActiveShip {
         this.movementTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             
             if (forwardStopTicks > 0) {
-                forwardStopTicks -= 2;
-            } else if (forwardStopTicks <= 0 && forwardStopTicks != -1) {
+                forwardStopTicks--;
+            } else if (forwardStopTicks == 0) {
                 currentForward = 0;
                 forwardStopTicks = -1;
             }
 
             if (sideStopTicks > 0) {
-                sideStopTicks -= 2;
-            } else if (sideStopTicks <= 0 && sideStopTicks != -1) {
+                sideStopTicks--;
+            } else if (sideStopTicks == 0) {
                 currentSide = 0;
                 sideStopTicks = -1;
             }
@@ -143,7 +144,7 @@ public class ActiveShip {
             if (currentSide != 0) {
                 rotate(currentSide);
             }
-        }, 0L, 2L);
+        }, 0L, 1L);
     }
 
     public void setInput(float forward, float side) {
@@ -151,14 +152,14 @@ public class ActiveShip {
             this.currentForward = forward;
             this.forwardStopTicks = -1;
         } else if (this.forwardStopTicks == -1) {
-            this.forwardStopTicks = 6;
+            this.forwardStopTicks = 8;
         }
 
         if (side != 0) {
             this.currentSide = side;
             this.sideStopTicks = -1;
         } else if (this.sideStopTicks == -1) {
-            this.sideStopTicks = 6;
+            this.sideStopTicks = 8;
         }
     }
 
@@ -198,15 +199,12 @@ public class ActiveShip {
     public void move(float forwardParams) {
         if (forwardParams == 0) return;
 
-        Vector direction = pilot.getLocation().getDirection().setY(0);
-        if (direction.lengthSquared() > 0.0001) {
-            direction.normalize();
-        } else {
-            direction = new Vector(0, 0, 1);
-        }
+        // ВЫЧИСЛЕНИЕ ПО КУРСУ КОРАБЛЯ: Движение строго по носу судна, независимо от поворота головы пилота
+        double radians = Math.toRadians(currentShipYaw);
+        double x = -Math.sin(radians);
+        double z = Math.cos(radians);
         
-        direction.multiply(forwardParams > 0 ? SPEED : -SPEED);
-
+        Vector direction = new Vector(x, 0, z).normalize().multiply(forwardParams > 0 ? SPEED : -SPEED);
         Location targetAnchor = currentAnchorCenter.clone().add(direction);
 
         if (canMove(targetAnchor, currentShipYaw)) {
@@ -244,13 +242,12 @@ public class ActiveShip {
             double newZ = offset.getX() * sin + offset.getZ() * cos;
 
             Location newLoc = currentAnchorCenter.clone().add(newX, offset.getY(), newZ);
-            newLoc.setYaw(currentShipYaw);
+            newLoc.setYaw(initialPilotYaw + currentShipYaw);
             
             display.teleport(newLoc);
         }
     }
 
-    // БОМБАРДИРОВКА ОШИБОК ПАРКОВКИ: Двухпроходная материализация мира
     public void restoreBlocks() {
         if (this.movementTask != null) {
             this.movementTask.cancel();
@@ -270,15 +267,15 @@ public class ActiveShip {
         int snappedYaw = Math.round(currentShipYaw / 90.0f) * 90;
         snappedYaw = (snappedYaw % 360 + 360) % 360;
         int rotations = snappedYaw / 90;
-        int totalAngleDegrees = snappedYaw;
 
         double rad = Math.toRadians(snappedYaw);
         double cos = Math.round(Math.cos(rad));
         double sin = Math.round(Math.sin(rad));
 
-        // Подготавливаем данные к размещению в два прохода
-        List<BlockPlacement> firstPass = new ArrayList<>(); // Базовые блоки, нижние части
-        List<BlockPlacement> secondPass = new ArrayList<>(); // Верхние части, настенный декор
+        record PreparedBlock(Block targetBlock, BlockData blockData, BlockState snapshot) {}
+
+        List<PreparedBlock> passOne = new ArrayList<>();
+        List<PreparedBlock> passTwo = new ArrayList<>();
 
         for (int i = 0; i < displayEntities.size(); i++) {
             BlockDisplay display = displayEntities.get(i);
@@ -291,10 +288,9 @@ public class ActiveShip {
             int dz = (int) Math.round(offset.getX() * sin + offset.getZ() * cos);
             int dy = (int) Math.round(offset.getY());
 
-            Location targetLoc = gridAnchor.clone().add(dx, dy, dz);
+            Block newBlock = gridAnchor.clone().add(dx, dy, dz).getBlock();
             BlockData blockData = data.getBlockData().clone();
 
-            // 1. Поворот Directional блоков (сундуки, ступеньки, печки)
             if (blockData instanceof Directional directional) {
                 BlockFace face = directional.getFacing();
                 for (int r = 0; r < rotations; r++) {
@@ -304,64 +300,59 @@ public class ActiveShip {
                     directional.setFacing(face);
                 }
             } 
-            // 2. Поворот Orientable блоков (бревна)
             else if (blockData instanceof Orientable orientable) {
                 if (rotations % 2 != 0) {
                     if (orientable.getAxis() == Axis.X) orientable.setAxis(Axis.Z);
                     else if (orientable.getAxis() == Axis.Z) orientable.setAxis(Axis.X);
                 }
             }
-            // 3. Точный поворот Rotatable блоков (таблички, черепа, баннеры) на 16 направлений
             else if (blockData instanceof Rotatable rotatable) {
-                BlockFace face = rotatable.getRotation();
-                rotatable.setRotation(rotateRotatableFace(face, totalAngleDegrees));
-            }
-
-            // 4. Защита двойных сундуков при повороте на 180 градусов (чтобы не рвались на одиночные)
-            if (blockData instanceof org.bukkit.block.data.type.Chest chest) {
-                if (totalAngleDegrees == 180 && chest.getType() != org.bukkit.block.data.type.Chest.Type.SINGLE) {
-                    chest.setType(chest.getType() == org.bukkit.block.data.type.Chest.Type.LEFT 
-                            ? org.bukkit.block.data.type.Chest.Type.RIGHT 
-                            : org.bukkit.block.data.type.Chest.Type.LEFT);
+                BlockFace currentFace = rotatable.getRotation();
+                int index = ROTATABLE_FACES.indexOf(currentFace);
+                if (index != -1) {
+                    int steps = Math.round((snappedYaw % 360) / 22.5f);
+                    int newIndex = (index + steps) % ROTATABLE_FACES.size();
+                    if (newIndex < 0) newIndex += ROTATABLE_FACES.size();
+                    rotatable.setRotation(ROTATABLE_FACES.get(newIndex));
                 }
             }
 
-            if (targetLoc.getBlock().getType() == Material.WATER && blockData instanceof Waterlogged wl) {
+            if (blockData instanceof org.bukkit.block.data.type.Chest chest) {
+                if (snappedYaw == 180 && chest.getType() != org.bukkit.block.data.type.Chest.Type.SINGLE) {
+                    chest.setType(chest.getType() == org.bukkit.block.data.type.Chest.Type.LEFT 
+                        ? org.bukkit.block.data.type.Chest.Type.RIGHT 
+                        : org.bukkit.block.data.type.Chest.Type.LEFT);
+                }
+            }
+
+            if (newBlock.getType() == Material.WATER && blockData instanceof Waterlogged wl) {
                 wl.setWaterlogged(true);
             }
 
-            BlockPlacement placement = new BlockPlacement(targetLoc, blockData, data.getStateSnapshot());
+            PreparedBlock pb = new PreparedBlock(newBlock, blockData, data.getStateSnapshot());
 
-            // Распределяем по проходам: верхние части дверей/кроватей и навесной декор ставим во втором проходе
-            boolean isTopHalf = (blockData instanceof Bisected bisected && bisected.getHalf() == Bisected.Half.TOP);
-            boolean isWallAttached = (blockData.getMaterial() == Material.LADDER || 
-                                      blockData.getMaterial().name().contains("TORCH") || 
-                                      blockData.getMaterial().name().contains("BUTTON") ||
-                                      blockData.getMaterial() == Material.LEVER);
+            boolean isTopHalf = (blockData instanceof Bisected b && b.getHalf() == Bisected.Half.TOP);
+            boolean isAttachment = (blockData instanceof org.bukkit.block.data.FaceAttachable);
 
-            if (isTopHalf || isWallAttached) {
-                secondPass.add(placement);
+            if (isTopHalf || isAttachment) {
+                passTwo.add(pb);
             } else {
-                firstPass.add(placement);
+                passOne.add(pb);
             }
         }
 
-        // Проход 1: Ставим сплошные блоки и опоры (без физики)
-        for (BlockPlacement p : firstPass) {
-            Block block = p.loc.getBlock();
-            block.setBlockData(p.data, false);
-            restoreContainerOrLectern(block, p.snapshot);
+        for (PreparedBlock pb : passOne) {
+            pb.targetBlock().setBlockData(pb.blockData(), false);
+            applyContainerData(pb.targetBlock(), pb.snapshot());
         }
 
-        // Проход 2: Ставим верхние части и навесной декор, опирающийся на проход 1
-        for (BlockPlacement p : secondPass) {
-            Block block = p.loc.getBlock();
-            block.setBlockData(p.data, false);
-            restoreContainerOrLectern(block, p.snapshot);
+        for (PreparedBlock pb : passTwo) {
+            pb.targetBlock().setBlockData(pb.blockData(), false);
+            applyContainerData(pb.targetBlock(), pb.snapshot());
         }
     }
 
-    private void restoreContainerOrLectern(Block block, BlockState snapshot) {
+    private void applyContainerData(Block block, BlockState snapshot) {
         if (snapshot instanceof Container oldContainer) {
             if (block.getState() instanceof Container newContainer) {
                 newContainer.getInventory().setContents(oldContainer.getSnapshotInventory().getContents());
@@ -371,36 +362,12 @@ public class ActiveShip {
 
         if (snapshot instanceof org.bukkit.block.Lectern oldLectern) {
             if (oldLectern.getPersistentDataContainer().has(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE)) {
-                BlockState newState = block.getState();
-                if (newState instanceof org.bukkit.block.Lectern newLectern) {
+                if (block.getState() instanceof org.bukkit.block.Lectern newLectern) {
                     newLectern.getPersistentDataContainer().set(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE, (byte) 1);
                     newLectern.update(true); 
                 }
             }
         }
-    }
-
-    // Вспомогательный класс для сортировки проходов парковки
-    private static class BlockPlacement {
-        final Location loc;
-        final BlockData data;
-        final BlockState snapshot;
-
-        BlockPlacement(Location loc, BlockData data, BlockState snapshot) {
-            this.loc = loc;
-            this.data = data;
-            this.snapshot = snapshot;
-        }
-    }
-
-    // Метод точного циклического сдвига для Rotatable элементов (16 градаций)
-    private static BlockFace rotateRotatableFace(BlockFace currentFace, int angleDegrees) {
-        int index = ROTATABLE_FACES.indexOf(currentFace);
-        if (index == -1) return currentFace;
-        int steps = Math.round((angleDegrees % 360) / 22.5f);
-        int newIndex = (index + steps) % ROTATABLE_FACES.size();
-        if (newIndex < 0) newIndex += ROTATABLE_FACES.size();
-        return ROTATABLE_FACES.get(newIndex);
     }
 
     private BlockFace rotateFaceRight(BlockFace face) {
@@ -413,17 +380,6 @@ public class ActiveShip {
             case SOUTH_EAST -> BlockFace.SOUTH_WEST;
             case SOUTH_WEST -> BlockFace.NORTH_WEST;
             case NORTH_WEST -> BlockFace.NORTH_EAST;
-            
-            case NORTH_NORTH_EAST -> BlockFace.EAST_SOUTH_EAST;
-            case EAST_SOUTH_EAST -> BlockFace.SOUTH_SOUTH_WEST;
-            case SOUTH_SOUTH_WEST -> BlockFace.WEST_NORTH_WEST;
-            case WEST_NORTH_WEST -> BlockFace.NORTH_NORTH_EAST;
-
-            case EAST_NORTH_EAST -> BlockFace.SOUTH_SOUTH_EAST;
-            case SOUTH_SOUTH_EAST -> BlockFace.WEST_SOUTH_WEST;
-            case WEST_SOUTH_WEST -> BlockFace.NORTH_NORTH_WEST;
-            case NORTH_NORTH_WEST -> BlockFace.EAST_NORTH_EAST;
-
             default -> face;
         };
     }
