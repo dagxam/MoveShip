@@ -32,32 +32,36 @@ public class ShipMovementListener implements Listener {
 
                 if (ship == null) return;
 
-                float forwardVal = 0;
-                float sideVal = 0;
+                boolean fwd = false, bwd = false, l = false, r = false;
 
-                if (event.getPacket().getFloat().size() >= 2) {
-                    sideVal = event.getPacket().getFloat().read(0);
-                    forwardVal = event.getPacket().getFloat().read(1);
-                } else {
-                    boolean fwd = false, bwd = false, l = false, r = false;
-                    for (Object obj : event.getPacket().getModifier().getValues()) {
-                        if (obj != null) {
-                            String str = obj.toString();
-                            if (str.contains("forward=true")) fwd = true;
-                            if (str.contains("backward=true")) bwd = true;
-                            if (str.contains("left=true")) l = true;
-                            if (str.contains("right=true")) r = true;
-                        }
+                try {
+                    // Парсинг нового формата пакета (1.20.6+ Record Input)
+                    Object inputObj = event.getPacket().getModifier().read(0);
+                    if (inputObj != null) {
+                        String inputStr = inputObj.toString();
+                        fwd = inputStr.contains("forward=true");
+                        bwd = inputStr.contains("backward=true");
+                        l = inputStr.contains("left=true");
+                        r = inputStr.contains("right=true");
                     }
-                    forwardVal = (fwd ? 1.0f : 0.0f) + (bwd ? -1.0f : 0.0f);
-                    sideVal = (l ? 1.0f : 0.0f) + (r ? -1.0f : 0.0f);
+                } catch (Exception ignored) {
+                    // Старый формат (до 1.20.4)
+                    float sideVal = event.getPacket().getFloat().readSafely(0);
+                    float forwardVal = event.getPacket().getFloat().readSafely(1);
+                    fwd = forwardVal > 0;
+                    bwd = forwardVal < 0;
+                    l = sideVal > 0;
+                    r = sideVal < 0;
                 }
 
-                final float finalForward = forwardVal;
-                final float finalSide = sideVal;
+                final boolean finalFwd = fwd;
+                final boolean finalBwd = bwd;
+                final boolean finalL = l;
+                final boolean finalR = r;
 
+                // Немедленно передаем состояние кнопок в ядро корабля
                 Bukkit.getScheduler().runTask(plugin, () -> {
-                    ship.setInput(finalForward, finalSide);
+                    ship.setInput(finalFwd, finalBwd, finalL, finalR);
                 });
             }
         });
