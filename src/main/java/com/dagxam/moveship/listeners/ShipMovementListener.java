@@ -5,6 +5,7 @@ import com.dagxam.moveship.core.ActiveShip;
 import com.dagxam.moveship.core.ShipManager;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Input;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -24,11 +25,13 @@ public class ShipMovementListener implements Listener {
         ActiveShip ship = ShipManager.getShip(player);
         if (ship == null) return;
 
+        Input input = event.getInput();
+
         ship.setInput(
-            event.getInput().forward(),
-            event.getInput().backward(),
-            event.getInput().left(),
-            event.getInput().right()
+            input.isForward(),
+            input.isBackward(),
+            input.isLeft(),
+            input.isRight()
         );
     }
 
