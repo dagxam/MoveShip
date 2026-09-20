@@ -1,7 +1,7 @@
 name: MoveShip
 version: '1.0-SNAPSHOT'
 main: com.dagxam.moveship.MoveShipPlugin
-api-version: '1.21'
+api-version: '26.3'
 authors:
   - Dagxam
 description: Управляемые корабли на BlockDisplays.
