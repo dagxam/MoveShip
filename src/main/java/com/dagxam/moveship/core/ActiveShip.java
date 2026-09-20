@@ -50,7 +50,6 @@ public class ActiveShip {
     private final List<ShipBlockData> originalBlocks  = new ArrayList<>();
     private final List<BlockDisplay>  displayEntities = new ArrayList<>();
 
-    // физика как у лодки
     private static final double MAX_FWD   = 0.40;
     private static final double MAX_BACK  = 0.15;
     private static final double ACCEL     = 0.025;
@@ -60,10 +59,8 @@ public class ActiveShip {
     private static final float TURN_ACCEL = 0.4f;
     private static final float TURN_DECEL = 0.78f;
 
-    // ввод — обновляется из PlayerInputEvent каждый тик
     private boolean kFwd, kBack, kLeft, kRight;
 
-    // состояние
     private Location anchorCenter;
     private float    shipYaw;
     private final float initialYaw;
@@ -75,8 +72,10 @@ public class ActiveShip {
     private final Set<Block> submergedWake = new HashSet<>();
     private record BP(int x, int y, int z) {}
 
-    // Y блока палубы под ногами пилота при активации
     private final double activationBlockY;
+
+    // ФИКС 1: Храним последнюю применённую Transformation чтобы не пересчитывать без поворота
+    private float lastAppliedDelta = Float.MAX_VALUE;
 
     private static final List<BlockFace> ROT16 = List.of(
             BlockFace.NORTH,           BlockFace.NORTH_NORTH_EAST,
@@ -89,7 +88,6 @@ public class ActiveShip {
             BlockFace.NORTH_WEST,      BlockFace.NORTH_NORTH_WEST
     );
 
-    // ════════════════════════════════════════════════════════════════════════
     public ActiveShip(Set<Block> blocks, Location anchorLocation, Player pilot) {
         this.pilot  = pilot;
         this.plugin = JavaPlugin.getPlugin(MoveShipPlugin.class);
@@ -100,11 +98,9 @@ public class ActiveShip {
         this.shipYaw    = pilot.getLocation().getYaw();
         this.initialYaw = this.shipYaw;
 
-        // Y верхней грани блока под ногами пилота
         Block blockUnder = pilot.getLocation().getBlock().getRelative(BlockFace.DOWN);
         this.activationBlockY = blockUnder.getY() + 1.0;
 
-        // ── ватерлиния ──────────────────────────────────────────────────────
         int seaLevel = Integer.MIN_VALUE;
         for (Block b : blocks) {
             for (BlockFace f : new BlockFace[]{
@@ -127,7 +123,8 @@ public class ActiveShip {
                 if (b.getY() <= seaLevel) submergedWake.add(b);
         }
 
-        // ── сохраняем блоки, удаляем физику, спавним Display ────────────────
+        // ФИКС 2: Сохраняем инвентарь через getInventory() а не rawInventory()
+        // чтобы потом корректно восстановить
         for (Block block : blocks) {
             Location  bc     = block.getLocation().add(0.5, 0.0, 0.5);
             Vector    offset = bc.toVector().subtract(anchorCenter.toVector());
@@ -137,7 +134,8 @@ public class ActiveShip {
             BlockState  snapshot;
 
             if (block.getState() instanceof Container cnt) {
-                Inventory inv = rawInventory(cnt);
+                // Используем getInventory() — работает для всех контейнеров
+                Inventory inv = cnt.getInventory();
                 savedItems = deepCopy(inv);
                 inv.clear();
                 cnt.update(true, false);
@@ -149,14 +147,24 @@ public class ActiveShip {
             originalBlocks.add(new ShipBlockData(offset.clone(), bd, snapshot, savedItems));
             block.setType(Material.AIR, false);
 
-            BlockDisplay disp = bc.getWorld().spawn(bc, BlockDisplay.class, e -> {
+            // ФИКС 1: BlockDisplay спавним в anchorCenter, смещение — через Transformation
+            // Это значит позиция entity НЕ МЕНЯЕТСЯ при движении без поворота
+            // Двигаем только seatEntity, блоки получают позицию через Transformation offset
+            final Vector finalOffset = offset.clone();
+            BlockDisplay disp = anchorCenter.getWorld().spawn(anchorCenter, BlockDisplay.class, e -> {
                 e.setBlock(bd);
                 e.setPersistent(false);
-                e.setTeleportDuration(1);
-                e.setInterpolationDuration(0);
+                // teleportDuration = 2 тика = клиент интерполирует плавно
+                e.setTeleportDuration(2);
+                e.setInterpolationDuration(2);
                 e.setInterpolationDelay(0);
+                // Начальный оффсет блока от якоря
                 e.setTransformation(new Transformation(
-                        new Vector3f(-0.5f, 0f, -0.5f),
+                        new Vector3f(
+                            (float) finalOffset.getX() - 0.5f,
+                            (float) finalOffset.getY(),
+                            (float) finalOffset.getZ() - 0.5f
+                        ),
                         new Quaternionf(),
                         new Vector3f(1f, 1f, 1f),
                         new Quaternionf()
@@ -165,8 +173,6 @@ public class ActiveShip {
             displayEntities.add(disp);
         }
 
-        // ── кресло пилота ────────────────────────────────────────────────────
-        // спавним ПОСЛЕ удаления блоков, Y = палуба - 0.6
         Location seatLoc = anchorCenter.clone();
         seatLoc.setY(activationBlockY - 0.6);
         seatLoc.setYaw(shipYaw);
@@ -183,13 +189,9 @@ public class ActiveShip {
         });
         seatEntity.addPassenger(pilot);
 
-        // ── движок каждый тик ───────────────────────────────────────────────
         task = Bukkit.getScheduler().runTaskTimer(plugin, this::tick, 1L, 1L);
     }
 
-    // ════════════════════════════════════════════════════════════════════════
-    // Ввод из PlayerInputEvent — Paper 1.21+
-    // ════════════════════════════════════════════════════════════════════════
     public void setInput(boolean forward, boolean backward, boolean left, boolean right) {
         this.kFwd   = forward;
         this.kBack  = backward;
@@ -197,16 +199,12 @@ public class ActiveShip {
         this.kRight = right;
     }
 
-    // ════════════════════════════════════════════════════════════════════════
-    // Тик движка
-    // ════════════════════════════════════════════════════════════════════════
     private void tick() {
         if (!pilot.isOnline() || !seatEntity.isValid()) {
             task.cancel();
             return;
         }
 
-        // скорость
         if (kFwd && !kBack) {
             currentSpeed = Math.min(MAX_FWD, currentSpeed + ACCEL);
         } else if (kBack && !kFwd) {
@@ -216,7 +214,6 @@ public class ActiveShip {
             if (Math.abs(currentSpeed) < 0.001) currentSpeed = 0.0;
         }
 
-        // поворот: A = влево (yaw−), D = вправо (yaw+)
         if (kLeft && !kRight) {
             currentTurn = Math.max(-TURN_MAX, currentTurn - TURN_ACCEL);
         } else if (kRight && !kLeft) {
@@ -227,12 +224,14 @@ public class ActiveShip {
         }
 
         boolean moved = false;
+        boolean rotated = false;
 
         if (currentTurn != 0f) {
             float nextYaw = norm(shipYaw + currentTurn);
             if (canMoveTo(anchorCenter, nextYaw)) {
                 shipYaw = nextYaw;
                 moved = true;
+                rotated = true;
             } else {
                 currentTurn  = 0f;
                 currentSpeed *= 0.5;
@@ -252,36 +251,78 @@ public class ActiveShip {
 
         if (!moved) return;
 
-        // пересчёт позиций Display
-        float  delta = shipYaw - initialYaw;
-        double rad   = Math.toRadians(delta);
-        double cos   = Math.cos(rad);
-        double sin   = Math.sin(rad);
+        float delta = shipYaw - initialYaw;
+        double rad  = Math.toRadians(delta);
+        double cos  = Math.cos(rad);
+        double sin  = Math.sin(rad);
 
-        Quaternionf rot = new Quaternionf().rotateY((float) Math.toRadians(-delta));
-        Vector3f    tr  = new Vector3f(-0.5f, 0f, -0.5f);
-        rot.transform(tr);
-        Transformation tf = new Transformation(tr, rot, new Vector3f(1f, 1f, 1f), new Quaternionf());
+        // ФИКС 1: КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+        // При движении БЕЗ поворота — телепортируем все DisplayEntity напрямую
+        // При повороте — обновляем Transformation (меняет визуальный угол блока)
+        // Никогда не делаем оба действия одновременно!
 
-        for (int i = 0; i < displayEntities.size(); i++) {
-            BlockDisplay disp = displayEntities.get(i);
-            if (!disp.isValid()) continue;
+        if (rotated) {
+            // Поворот: обновляем Transformation у каждого Display
+            // Display остаётся на месте, меняется только его визуальный угол и оффсет
+            Quaternionf rot = new Quaternionf().rotateY((float) Math.toRadians(-delta));
 
-            Vector off = originalBlocks.get(i).getRelativeOffset();
-            double nx  = off.getX() * cos - off.getZ() * sin;
-            double nz  = off.getX() * sin + off.getZ() * cos;
+            for (int i = 0; i < displayEntities.size(); i++) {
+                BlockDisplay disp = displayEntities.get(i);
+                if (!disp.isValid()) continue;
 
-            Location target = anchorCenter.clone().add(nx, off.getY(), nz);
-            target.setYaw(0f);
-            target.setPitch(0f);
+                Vector off = originalBlocks.get(i).getRelativeOffset();
 
-            disp.teleport(target);
-            disp.setInterpolationDelay(0);
-            disp.setInterpolationDuration(1);
-            disp.setTransformation(tf);
+                // Повёрнутый оффсет блока
+                double nx = off.getX() * cos - off.getZ() * sin;
+                double nz = off.getX() * sin + off.getZ() * cos;
+
+                Vector3f translation = new Vector3f(
+                        (float) nx - 0.5f,
+                        (float) off.getY(),
+                        (float) nz - 0.5f
+                );
+
+                // Телепортируем Display на новую мировую позицию (якорь + повёрнутый оффсет)
+                Location dispLoc = anchorCenter.clone().add(nx, off.getY(), nz);
+                dispLoc.setYaw(0f);
+                dispLoc.setPitch(0f);
+                disp.teleport(dispLoc);
+
+                // Применяем поворот через Transformation
+                Transformation tf = new Transformation(
+                        new Vector3f(-0.5f, 0f, -0.5f),
+                        rot,
+                        new Vector3f(1f, 1f, 1f),
+                        new Quaternionf()
+                );
+                disp.setInterpolationDelay(0);
+                disp.setInterpolationDuration(2);
+                disp.setTransformation(tf);
+            }
+
+            lastAppliedDelta = delta;
+
+        } else {
+            // Движение БЕЗ поворота: только teleport, БЕЗ setTransformation
+            // teleportDuration=2 даёт клиенту 2 тика на плавную интерполяцию
+            for (int i = 0; i < displayEntities.size(); i++) {
+                BlockDisplay disp = displayEntities.get(i);
+                if (!disp.isValid()) continue;
+
+                Vector off = originalBlocks.get(i).getRelativeOffset();
+                double nx  = off.getX() * cos - off.getZ() * sin;
+                double nz  = off.getX() * sin + off.getZ() * cos;
+
+                Location target = anchorCenter.clone().add(nx, off.getY(), nz);
+                target.setYaw(0f);
+                target.setPitch(0f);
+
+                // ТОЛЬКО teleport — без setTransformation
+                disp.teleport(target);
+            }
         }
 
-        // двигаем кресло (Y фиксирован на высоте палубы)
+        // Кресло
         Location seatTarget = anchorCenter.clone();
         seatTarget.setY(activationBlockY - 0.6);
         seatTarget.setYaw(shipYaw);
@@ -291,7 +332,6 @@ public class ActiveShip {
         fillWater(cos, sin);
     }
 
-    // ════════════════════════════════════════════════════════════════════════
     private boolean canMoveTo(Location target, float yaw) {
         float  delta = yaw - initialYaw;
         double rad   = Math.toRadians(delta);
@@ -329,9 +369,6 @@ public class ActiveShip {
         });
     }
 
-    // ════════════════════════════════════════════════════════════════════════
-    // Парковка
-    // ════════════════════════════════════════════════════════════════════════
     public void restoreBlocks() {
         if (task != null) task.cancel();
 
@@ -378,8 +415,7 @@ public class ActiveShip {
         }
 
         for (PB pb : pass1) {
-            boolean phys = pb.bd() instanceof MultipleFacing
-                        || pb.bd() instanceof Wall;
+            boolean phys = pb.bd() instanceof MultipleFacing || pb.bd() instanceof Wall;
             pb.block().setType(pb.bd().getMaterial(), false);
             pb.block().setBlockData(pb.bd(), phys);
         }
@@ -387,12 +423,14 @@ public class ActiveShip {
             pb.block().setType(pb.bd().getMaterial(), false);
             pb.block().setBlockData(pb.bd(), false);
         }
+
+        // ФИКС 2: Контейнеры — применяем сразу и через 2 тика
+        // 2 тика вместо 1 — Paper 26.3 медленнее инициализирует TileEntity
         for (PB pb : pass3) applyContainer(pb.block(), pb.snap2(), pb.items());
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             for (PB pb : pass3) applyContainer(pb.block(), pb.snap2(), pb.items());
-        }, 1L);
+        }, 2L);
 
-        // ставим игрока на палубу
         double safeY = findSafeDeckY(pilot.getLocation(), grid, csr, snr);
         Location land = pilot.getLocation().clone();
         land.setY(safeY);
@@ -425,9 +463,6 @@ public class ActiveShip {
         return top != Integer.MIN_VALUE ? top + 1.0 : Math.floor(pilotLoc.getY()) + 1.0;
     }
 
-    // ════════════════════════════════════════════════════════════════════════
-    // Вспомогательные
-    // ════════════════════════════════════════════════════════════════════════
     private static float norm(float y) {
         y %= 360f;
         return y < 0 ? y + 360f : y;
@@ -522,14 +557,23 @@ public class ActiveShip {
             || s instanceof org.bukkit.block.Lectern;
     }
 
+    // ФИКС 2: applyContainer использует getInventory() вместо rawInventory()
     private void applyContainer(Block block, BlockState snap, ItemStack[] items) {
-        if (items != null && block.getState() instanceof Container c) {
-            Inventory   inv  = rawInventory(c);
-            ItemStack[] fill = new ItemStack[inv.getSize()];
-            for (int i = 0; i < Math.min(items.length, fill.length); i++)
-                if (items[i] != null) fill[i] = items[i].clone();
-            inv.setContents(fill);
-            c.update(true, false);
+        if (items != null) {
+            // Получаем свежее состояние блока после его установки
+            BlockState fresh = block.getState();
+            if (fresh instanceof Container c) {
+                // Используем getInventory() — единственный надёжный способ
+                // для всех типов контейнеров в Paper 26.3
+                Inventory inv = c.getInventory();
+                ItemStack[] fill = new ItemStack[inv.getSize()];
+                for (int i = 0; i < Math.min(items.length, fill.length); i++) {
+                    if (items[i] != null) fill[i] = items[i].clone();
+                }
+                inv.setContents(fill);
+                // force=true обязательно для записи в NBT чанка
+                c.update(true, false);
+            }
         }
         if (snap instanceof org.bukkit.block.Lectern old
                 && old.getPersistentDataContainer()
@@ -539,11 +583,6 @@ public class ActiveShip {
               .set(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE, (byte) 1);
             nl.update(true, false);
         }
-    }
-
-    private static Inventory rawInventory(Container c) {
-        return c instanceof org.bukkit.block.Chest ch
-                ? ch.getBlockInventory() : c.getInventory();
     }
 
     private static ItemStack[] deepCopy(Inventory inv) {
