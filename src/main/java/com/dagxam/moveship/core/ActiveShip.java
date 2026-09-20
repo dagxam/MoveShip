@@ -282,4 +282,286 @@ public class ActiveShip {
             // teleportDuration=1 → плавная интерполяция клиентом
             disp.teleport(target);
 
-            // Обновляем поворот через 
+            // Обновляем поворот через Transformation
+            disp.setInterpolationDelay(0);
+            disp.setInterpolationDuration(1);
+            disp.setTransformation(tf);
+        }
+
+        // ── Двигаем кресло ──
+        Location seatTarget = anchorCenter.clone();
+        // Фиксируем Y кресла на высоте палубы (не меняется при движении)
+        seatTarget.setY(activationBlockY - 0.6);
+        seatTarget.setYaw(shipYaw);
+        seatTarget.setPitch(0f);
+        seatEntity.teleport(seatTarget);
+
+        fillWater(cos, sin);
+    }
+
+    private boolean canMoveTo(Location target, float yaw) {
+        float  delta = yaw - initialYaw;
+        double rad   = Math.toRadians(delta);
+        double cos   = Math.cos(rad);
+        double sin   = Math.sin(rad);
+
+        for (ShipBlockData d : originalBlocks) {
+            Vector off = d.getRelativeOffset();
+            double nx  = off.getX() * cos - off.getZ() * sin;
+            double nz  = off.getX() * sin + off.getZ() * cos;
+            Block  b   = target.clone().add(nx, off.getY() + 0.5, nz).getBlock();
+            if (b.getType().isSolid()) return false;
+        }
+        return true;
+    }
+
+    private void fillWater(double cos, double sin) {
+        if (submergedWake.isEmpty()) return;
+        Set<BP> occupied = new HashSet<>();
+        for (ShipBlockData d : originalBlocks) {
+            Vector off = d.getRelativeOffset();
+            double nx  = off.getX() * cos - off.getZ() * sin;
+            double nz  = off.getX() * sin + off.getZ() * cos;
+            int    bx  = (int) Math.floor(anchorCenter.getX() + nx);
+            int    by  = (int) Math.floor(anchorCenter.getY() + off.getY() + 0.5);
+            int    bz  = (int) Math.floor(anchorCenter.getZ() + nz);
+            occupied.add(new BP(bx, by, bz));
+        }
+        submergedWake.removeIf(b -> {
+            if (!occupied.contains(new BP(b.getX(), b.getY(), b.getZ()))) {
+                b.setType(Material.WATER, true);
+                return true;
+            }
+            return false;
+        });
+    }
+
+    // ── Парковка ────────────────────────────────────────────────────────────
+    public void restoreBlocks() {
+        if (task != null) task.cancel();
+
+        if (seatEntity.isValid()) seatEntity.eject();
+        if (pilot.isInsideVehicle()) pilot.leaveVehicle();
+
+        for (Block b : submergedWake) b.setType(Material.WATER, true);
+        submergedWake.clear();
+
+        Location grid = new Location(
+                anchorCenter.getWorld(),
+                Math.floor(anchorCenter.getX()) + 0.5,
+                Math.floor(anchorCenter.getY()),
+                Math.floor(anchorCenter.getZ()) + 0.5);
+
+        float delta = shipYaw - initialYaw;
+        int   snap  = Math.floorMod(Math.round(delta / 90f) * 90, 360);
+        int   rots  = snap / 90;
+        double csr  = Math.round(Math.cos(Math.toRadians(snap)));
+        double snr  = Math.round(Math.sin(Math.toRadians(snap)));
+
+        record PB(Block block, BlockData bd, BlockState snap2, ItemStack[] items) {}
+        List<PB> pass1 = new ArrayList<>(),
+                 pass2 = new ArrayList<>(),
+                 pass3 = new ArrayList<>();
+
+        for (ShipBlockData d : originalBlocks) {
+            Vector off = d.getRelativeOffset();
+            int dx = (int) Math.round(off.getX() * csr - off.getZ() * snr);
+            int dz = (int) Math.round(off.getX() * snr + off.getZ() * csr);
+            int dy = (int) Math.round(off.getY());
+
+            Block     nb = grid.clone().add(dx, dy, dz).getBlock();
+            BlockData bd = d.getBlockData().clone();
+            rotateData(bd, rots, snap);
+
+            if (nb.getType() == Material.WATER && bd instanceof Waterlogged wl)
+                wl.setWaterlogged(true);
+
+            PB pb = new PB(nb, bd, d.getStateSnapshot(), d.getItems());
+            if (d.getItems() != null || isTile(d.getStateSnapshot())) pass3.add(pb);
+            if (isPass2(bd)) pass2.add(pb);
+            else             pass1.add(pb);
+        }
+
+        // Проход 1: несущие блоки
+        for (PB pb : pass1) {
+            boolean phys = pb.bd() instanceof MultipleFacing
+                        || pb.bd() instanceof Wall;
+            pb.block().setType(pb.bd().getMaterial(), false);
+            pb.block().setBlockData(pb.bd(), phys);
+        }
+        // Проход 2: навесные (фонари, кнопки, таблички)
+        for (PB pb : pass2) {
+            pb.block().setType(pb.bd().getMaterial(), false);
+            pb.block().setBlockData(pb.bd(), false);
+        }
+        // Проход 3: контейнеры
+        for (PB pb : pass3) applyContainer(pb.block(), pb.snap2(), pb.items());
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            for (PB pb : pass3) applyContainer(pb.block(), pb.snap2(), pb.items());
+        }, 1L);
+
+        // ── Ставим игрока на палубу ──────────────────────────────────────────
+        // Ищем самый высокий блок корабля под ногами игрока
+        double safeY = findSafeDeckY(pilot.getLocation(), grid, csr, snr);
+        Location land = pilot.getLocation().clone();
+        land.setY(safeY);
+        pilot.teleport(land);
+
+        // Удаляем Display после телепорта игрока
+        displayEntities.forEach(d -> { if (d.isValid()) d.remove(); });
+        displayEntities.clear();
+        if (seatEntity.isValid()) seatEntity.remove();
+    }
+
+    private double findSafeDeckY(Location pilotLoc, Location grid, double cos, double sin) {
+        int px  = pilotLoc.getBlockX();
+        int pz  = pilotLoc.getBlockZ();
+        int top = Integer.MIN_VALUE;
+
+        for (ShipBlockData d : originalBlocks) {
+            Vector off = d.getRelativeOffset();
+            int dx = (int) Math.round(off.getX() * cos - off.getZ() * sin);
+            int dz = (int) Math.round(off.getX() * sin + off.getZ() * cos);
+            int bx = grid.getBlockX() + dx;
+            int by = grid.getBlockY() + (int) Math.round(off.getY());
+            int bz = grid.getBlockZ() + dz;
+
+            if (bx == px && bz == pz
+                    && d.getBlockData().getMaterial().isSolid()
+                    && by > top) {
+                top = by;
+            }
+        }
+        return top != Integer.MIN_VALUE ? top + 1.0 : Math.floor(pilotLoc.getY()) + 1.0;
+    }
+
+    // ── Вспомогательные ─────────────────────────────────────────────────────
+    private static float norm(float y) {
+        y %= 360f;
+        return y < 0 ? y + 360f : y;
+    }
+
+    private static Vector yawDir(float yaw) {
+        double r = Math.toRadians(yaw);
+        return new Vector(-Math.sin(r), 0.0, Math.cos(r));
+    }
+
+    private void rotateData(BlockData bd, int rots, int snap) {
+        if (bd instanceof Directional d) {
+            BlockFace f = d.getFacing();
+            for (int i = 0; i < rots; i++) f = cw(f);
+            if (d.getFaces().contains(f)) d.setFacing(f);
+        } else if (bd instanceof Orientable o) {
+            if (rots % 2 != 0) {
+                if (o.getAxis() == Axis.X) o.setAxis(Axis.Z);
+                else if (o.getAxis() == Axis.Z) o.setAxis(Axis.X);
+            }
+        } else if (bd instanceof Rotatable r) {
+            int idx = ROT16.indexOf(r.getRotation());
+            if (idx >= 0) {
+                int steps = Math.round((snap % 360) / 22.5f);
+                r.setRotation(ROT16.get(Math.floorMod(idx + steps, 16)));
+            }
+        } else if (bd instanceof MultipleFacing mf) {
+            Set<BlockFace> cur = new HashSet<>(mf.getFaces());
+            mf.getAllowedFaces().forEach(f -> mf.setFace(f, false));
+            for (BlockFace f : cur) {
+                BlockFace rf = f;
+                for (int i = 0; i < rots; i++) rf = cw(rf);
+                if (mf.getAllowedFaces().contains(rf)) mf.setFace(rf, true);
+            }
+        } else if (bd instanceof Wall w) {
+            Map<BlockFace, Wall.Height> h = new HashMap<>();
+            for (BlockFace f : new BlockFace[]{
+                    BlockFace.NORTH, BlockFace.EAST,
+                    BlockFace.SOUTH, BlockFace.WEST})
+                h.put(f, w.getHeight(f));
+            h.forEach((f, ht) -> {
+                BlockFace rf = f;
+                for (int i = 0; i < rots; i++) rf = cw(rf);
+                w.setHeight(rf, ht);
+            });
+        }
+        if (bd instanceof org.bukkit.block.data.type.Chest c) {
+            if (snap == 180
+                    && c.getType() != org.bukkit.block.data.type.Chest.Type.SINGLE) {
+                c.setType(c.getType() == org.bukkit.block.data.type.Chest.Type.LEFT
+                        ? org.bukkit.block.data.type.Chest.Type.RIGHT
+                        : org.bukkit.block.data.type.Chest.Type.LEFT);
+            }
+        }
+    }
+
+    private static BlockFace cw(BlockFace f) {
+        return switch (f) {
+            case NORTH      -> BlockFace.EAST;
+            case EAST       -> BlockFace.SOUTH;
+            case SOUTH      -> BlockFace.WEST;
+            case WEST       -> BlockFace.NORTH;
+            case NORTH_EAST -> BlockFace.SOUTH_EAST;
+            case SOUTH_EAST -> BlockFace.SOUTH_WEST;
+            case SOUTH_WEST -> BlockFace.NORTH_WEST;
+            case NORTH_WEST -> BlockFace.NORTH_EAST;
+            default         -> f;
+        };
+    }
+
+    private boolean isPass2(BlockData bd) {
+        if (bd instanceof Bisected b && b.getHalf() == Bisected.Half.TOP) return true;
+        if (bd instanceof FaceAttachable) return true;
+        if (bd instanceof Lantern) return true;
+        Material m = bd.getMaterial();
+        return m == Material.LANTERN         || m == Material.SOUL_LANTERN
+            || m == Material.CHAIN           || m == Material.END_ROD
+            || m == Material.TORCH           || m == Material.SOUL_TORCH
+            || m == Material.WALL_TORCH      || m == Material.SOUL_WALL_TORCH
+            || m == Material.REDSTONE_TORCH  || m == Material.REDSTONE_WALL_TORCH
+            || m.name().endsWith("_BUTTON")
+            || m.name().endsWith("_SIGN")
+            || m.name().endsWith("_HANGING_SIGN")
+            || m.name().endsWith("_WALL_SIGN")
+            || m.name().endsWith("_BANNER")
+            || m.name().endsWith("_WALL_BANNER");
+    }
+
+    private boolean isTile(BlockState s) {
+        return s instanceof Container
+            || s instanceof Furnace
+            || s instanceof org.bukkit.block.Lectern;
+    }
+
+    private void applyContainer(Block block, BlockState snap, ItemStack[] items) {
+        if (items != null && block.getState() instanceof Container c) {
+            Inventory inv  = rawInventory(c);
+            ItemStack[] fill = new ItemStack[inv.getSize()];
+            for (int i = 0; i < Math.min(items.length, fill.length); i++)
+                if (items[i] != null) fill[i] = items[i].clone();
+            inv.setContents(fill);
+            c.update(true, false);
+        }
+        if (snap instanceof org.bukkit.block.Lectern old
+                && old.getPersistentDataContainer()
+                      .has(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE)
+                && block.getState() instanceof org.bukkit.block.Lectern nl) {
+            nl.getPersistentDataContainer()
+              .set(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE, (byte) 1);
+            nl.update(true, false);
+        }
+    }
+
+    private static Inventory rawInventory(Container c) {
+        return c instanceof org.bukkit.block.Chest ch
+                ? ch.getBlockInventory() : c.getInventory();
+    }
+
+    private static ItemStack[] deepCopy(Inventory inv) {
+        ItemStack[] a = new ItemStack[inv.getSize()];
+        for (int i = 0; i < a.length; i++) {
+            ItemStack s = inv.getItem(i);
+            if (s != null && !s.getType().isAir()) a[i] = s.clone();
+        }
+        return a;
+    }
+
+    public Player getPilot() { return pilot; }
+}
