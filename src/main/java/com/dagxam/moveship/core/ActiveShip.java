@@ -21,6 +21,8 @@ import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
@@ -42,15 +44,15 @@ public class ActiveShip {
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
 
-    // Физика плавной лодки (разгон, скольжение и сопротивление воды)
-    private static final double MAX_SPEED = 0.40;
-    private static final double MAX_REVERSE_SPEED = 0.18;
-    private static final double ACCELERATION = 0.04;     // Нарастание скорости за такт
-    private static final double WATER_FRICTION = 0.90;   // Скольжение по инерции
+    // Физика лодки: уверенный разгон, мягкое скольжение и естественные повороты
+    private static final double MAX_SPEED = 0.45;
+    private static final double MAX_REVERSE_SPEED = 0.20;
+    private static final double ACCELERATION = 0.03;
+    private static final double WATER_FRICTION = 0.96; // Инерция скольжения по воде
 
-    private static final float MAX_TURN_SPEED = 3.6f;
-    private static final float TURN_ACCEL = 0.70f;
-    private static final float TURN_FRICTION = 0.75f;
+    private static final float MAX_TURN_SPEED = 2.8f;
+    private static final float TURN_ACCEL = 0.40f;
+    private static final float TURN_FRICTION = 0.82f;
 
     private Location currentAnchorCenter;
     private final Vector initialSeatOffset; 
@@ -61,15 +63,14 @@ public class ActiveShip {
     private double currentSpeed = 0.0;
     private float currentTurnSpeed = 0.0f;
 
-    private float targetForward = 0f;
-    private float targetSide = 0f;
-    
-    private int forwardStopTicks = -1;
-    private int sideStopTicks = -1;
+    // Счётчики удержания клавиш для защиты от сетевых сбросов (Debounce)
+    private int forwardTicksLeft = 0;
+    private int backwardTicksLeft = 0;
+    private int leftTicksLeft = 0;
+    private int rightTicksLeft = 0;
     
     private final BukkitTask movementTask; 
 
-    // Блоки подводной части для смыкания воды
     private final Set<Block> submergedWakeBlocks = new HashSet<>();
     private record BlockPos(int x, int y, int z) {}
 
@@ -87,9 +88,9 @@ public class ActiveShip {
         this.shipYaw = pilot.getLocation().getYaw();
         this.initialShipYaw = this.shipYaw;
 
-        // Посадка пилота: +0.65 гарантирует, что игрок сидит НА палубе, а не внутри блоков
+        // Фиксация сиденья: высота выверена так, чтобы пилот сидел прямо на палубе с чистым обзором
         this.initialSeatOffset = pilot.getLocation().toVector().subtract(currentAnchorCenter.toVector());
-        this.initialSeatOffset.setY(pilot.getLocation().getY() - currentAnchorCenter.getY() + 0.65); 
+        this.initialSeatOffset.setY(pilot.getLocation().getY() - currentAnchorCenter.getY() - 0.7); 
 
         Location seatLoc = getCalculatedSeatLocation();
         this.coreEntity = (ArmorStand) seatLoc.getWorld().spawnEntity(seatLoc, EntityType.ARMOR_STAND);
@@ -99,7 +100,7 @@ public class ActiveShip {
         this.coreEntity.setMarker(true); 
         this.coreEntity.setSmall(true);
 
-        // 1. Определение уровня воды для ликвидации дыр
+        // 1. Определение ватерлинии для кильватерного следа
         int seaLevel = Integer.MIN_VALUE;
         for (Block block : blocks) {
             for (BlockFace face : new BlockFace[]{BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.DOWN}) {
@@ -123,27 +124,40 @@ public class ActiveShip {
             }
         }
 
-        // 2. Создание BlockDisplay и очистка мира
+        // 2. Глубокое сохранение инвентарей (контейнеров) и создание BlockDisplay
         for (Block block : blocks) {
             Location blockCenter = block.getLocation().add(0.5, 0.0, 0.5);
             Vector offset = blockCenter.toVector().subtract(currentAnchorCenter.toVector());
 
             BlockState snapshot = block.getState();
-            originalBlocks.add(new ShipBlockData(offset, block.getBlockData(), snapshot));
 
-            if (block.getState() instanceof Container container) {
-                container.getInventory().clear();
-                container.update(true, false);
+            // ГЛУБОКОЕ КЛОНИРОВАНИЕ ИНВЕНТАРЯ (СУНДУКИ, ПЕЧИ, БОЧКИ, ВОРОНКИ И Т.Д.)
+            ItemStack[] savedItems = null;
+            if (snapshot instanceof Container container) {
+                Inventory inv = (container instanceof org.bukkit.block.Chest chest)
+                        ? chest.getBlockInventory()
+                        : container.getInventory();
+                
+                savedItems = new ItemStack[inv.getSize()];
+                for (int slot = 0; slot < inv.getSize(); slot++) {
+                    ItemStack item = inv.getItem(slot);
+                    if (item != null) {
+                        savedItems[slot] = item.clone(); // Независимая копия в памяти
+                    }
+                }
+                inv.clear(); // Очищаем мир, чтобы при удалении блока вещи не выпали на пол
             }
+
+            originalBlocks.add(new ShipBlockData(offset, block.getBlockData(), snapshot, savedItems));
 
             block.setType(Material.AIR, false);
 
             BlockDisplay display = (BlockDisplay) currentAnchorCenter.getWorld().spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
             display.setBlock(snapshot.getBlockData());
             
-            // СЕКРЕТ ПЛАВНОСТИ: 3 тика интерполяции при частоте обновления 2 тика
-            display.setTeleportDuration(3);
-            display.setInterpolationDuration(3);
+            // Синхронизация: 1L таск и 1 тик интерполяции для 60 FPS
+            display.setTeleportDuration(1);
+            display.setInterpolationDuration(1);
             display.setInterpolationDelay(0);
 
             Transformation transform = new Transformation(
@@ -161,44 +175,37 @@ public class ActiveShip {
 
         MoveShipPlugin plugin = JavaPlugin.getPlugin(MoveShipPlugin.class);
         
-        // 3. Цикл мотора: обновление каждые 2 тика (100 мс) с буферизацией в 3 тика (150 мс)
+        // 3. Такт мотора: 1 тик сервера (50 мс) с инерцией
         this.movementTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             
-            if (forwardStopTicks > 0) {
-                forwardStopTicks -= 2;
-                if (forwardStopTicks <= 0) {
-                    targetForward = 0f;
-                    forwardStopTicks = -1;
-                }
-            }
+            boolean isForward = forwardTicksLeft > 0;
+            boolean isBackward = backwardTicksLeft > 0;
+            boolean isLeft = leftTicksLeft > 0;
+            boolean isRight = rightTicksLeft > 0;
 
-            if (sideStopTicks > 0) {
-                sideStopTicks -= 2;
-                if (sideStopTicks <= 0) {
-                    targetSide = 0f;
-                    sideStopTicks = -1;
-                }
-            }
+            if (forwardTicksLeft > 0) forwardTicksLeft--;
+            if (backwardTicksLeft > 0) backwardTicksLeft--;
+            if (leftTicksLeft > 0) leftTicksLeft--;
+            if (rightTicksLeft > 0) rightTicksLeft--;
 
-            // Плавный набор скорости
-            if (targetForward > 0) {
+            // Плавный разгон и инерция хода
+            if (isForward) {
                 currentSpeed = Math.min(MAX_SPEED, currentSpeed + ACCELERATION);
-            } else if (targetForward < 0) {
+            } else if (isBackward) {
                 currentSpeed = Math.max(-MAX_REVERSE_SPEED, currentSpeed - ACCELERATION);
             } else {
                 currentSpeed *= WATER_FRICTION;
-                if (Math.abs(currentSpeed) < 0.008) currentSpeed = 0.0;
+                if (Math.abs(currentSpeed) < 0.005) currentSpeed = 0.0;
             }
 
             // Плавный поворот руля
-            if (targetSide != 0) {
-                currentTurnSpeed += (targetSide > 0 ? -TURN_ACCEL : TURN_ACCEL);
-                if (Math.abs(currentTurnSpeed) > MAX_TURN_SPEED) {
-                    currentTurnSpeed = Math.signum(currentTurnSpeed) * MAX_TURN_SPEED;
-                }
+            if (isLeft) {
+                currentTurnSpeed = Math.max(-MAX_TURN_SPEED, currentTurnSpeed - TURN_ACCEL);
+            } else if (isRight) {
+                currentTurnSpeed = Math.min(MAX_TURN_SPEED, currentTurnSpeed + TURN_ACCEL);
             } else {
                 currentTurnSpeed *= TURN_FRICTION;
-                if (Math.abs(currentTurnSpeed) < 0.1f) currentTurnSpeed = 0f;
+                if (Math.abs(currentTurnSpeed) < 0.05f) currentTurnSpeed = 0f;
             }
 
             boolean stateChanged = false;
@@ -229,28 +236,33 @@ public class ActiveShip {
                 }
             }
 
-            // Единая телепортация за кадр
             if (stateChanged) {
                 coreEntity.teleport(getCalculatedSeatLocation());
                 updateDisplayEntities();
-                fillWaterBehindShip(); // Вода смыкается за кормой
+                fillWaterBehindShip();
             }
-        }, 0L, 2L);
+        }, 0L, 1L);
     }
 
+    // Приём сетевого ввода с буфером на 6 тиков (устраняет фантомные сбросы клиентом)
     public void setInput(float forward, float side) {
-        if (forward != 0) {
-            this.targetForward = forward;
-            this.forwardStopTicks = 6;
+        if (forward > 0) {
+            this.forwardTicksLeft = 6;
+            this.backwardTicksLeft = 0;
+        } else if (forward < 0) {
+            this.backwardTicksLeft = 6;
+            this.forwardTicksLeft = 0;
         }
 
-        if (side != 0) {
-            this.targetSide = side;
-            this.sideStopTicks = 6;
+        if (side > 0) {
+            this.leftTicksLeft = 6;
+            this.rightTicksLeft = 0;
+        } else if (side < 0) {
+            this.rightTicksLeft = 6;
+            this.leftTicksLeft = 0;
         }
     }
 
-    // Заполнение пустот водой по мере движения (кильватерный след)
     private void fillWaterBehindShip() {
         if (submergedWakeBlocks.isEmpty()) return;
 
@@ -265,7 +277,7 @@ public class ActiveShip {
             double newX = offset.getX() * cos - offset.getZ() * sin;
             double newZ = offset.getX() * sin + offset.getZ() * cos;
             int bx = (int) Math.floor(currentAnchorCenter.getX() + newX);
-            int by = (int) Math.floor(currentAnchorCenter.getY() + offset.getY());
+            int by = (int) Math.floor(currentAnchorCenter.getY() + offset.getY() + 0.5);
             int bz = (int) Math.floor(currentAnchorCenter.getZ() + newZ);
             occupiedPositions.add(new BlockPos(bx, by, bz));
         }
@@ -273,7 +285,6 @@ public class ActiveShip {
         submergedWakeBlocks.removeIf(block -> {
             BlockPos pos = new BlockPos(block.getX(), block.getY(), block.getZ());
             if (!occupiedPositions.contains(pos)) {
-                // Ставим воду с физикой, чтобы соседняя вода моментально выровняла гладь
                 block.setType(Material.WATER, true);
                 return true;
             }
@@ -291,7 +302,8 @@ public class ActiveShip {
         double newZ = initialSeatOffset.getX() * sin + initialSeatOffset.getZ() * cos;
 
         Location seatLoc = currentAnchorCenter.clone().add(newX, initialSeatOffset.getY(), newZ);
-        seatLoc.setYaw(this.shipYaw);
+        seatLoc.setYaw(pilot.getLocation().getYaw());
+        seatLoc.setPitch(pilot.getLocation().getPitch());
         return seatLoc;
     }
 
@@ -337,6 +349,7 @@ public class ActiveShip {
         }
     }
 
+    // ТРЁХПРОХОДНАЯ ПАРКОВКА: абсолютная гарантия сохранения сундуков, печек, бочек и дверей
     public void restoreBlocks() {
         if (this.movementTask != null) {
             this.movementTask.cancel();
@@ -344,7 +357,6 @@ public class ActiveShip {
 
         coreEntity.removePassenger(pilot);
 
-        // Гарантированно затягиваем водой всё место начальной стоянки
         for (Block remaining : submergedWakeBlocks) {
             remaining.setType(Material.WATER, true);
         }
@@ -368,10 +380,11 @@ public class ActiveShip {
         double cos = Math.round(Math.cos(rad));
         double sin = Math.round(Math.sin(rad));
 
-        record PreparedBlock(Block targetBlock, BlockData blockData, BlockState snapshot) {}
+        record PreparedBlock(Block targetBlock, BlockData blockData, BlockState snapshot, ItemStack[] items) {}
 
         List<PreparedBlock> passOne = new ArrayList<>();
         List<PreparedBlock> passTwo = new ArrayList<>();
+        List<PreparedBlock> passThreeContainers = new ArrayList<>();
 
         for (int i = 0; i < displayEntities.size(); i++) {
             BlockDisplay display = displayEntities.get(i);
@@ -453,7 +466,11 @@ public class ActiveShip {
                 wl.setWaterlogged(true);
             }
 
-            PreparedBlock pb = new PreparedBlock(newBlock, blockData, data.getStateSnapshot());
+            PreparedBlock pb = new PreparedBlock(newBlock, blockData, data.getStateSnapshot(), data.getItems());
+
+            if (data.getItems() != null || data.getStateSnapshot() instanceof org.bukkit.block.Lectern) {
+                passThreeContainers.add(pb);
+            }
 
             boolean isTopHalf = (blockData instanceof Bisected b && b.getHalf() == Bisected.Half.TOP);
             boolean isAttachment = (blockData instanceof org.bukkit.block.data.FaceAttachable);
@@ -465,24 +482,32 @@ public class ActiveShip {
             }
         }
 
+        // ПРОХОД 1: каркас, твердые блоки, основания и заборы
         for (PreparedBlock pb : passOne) {
             boolean applyPhysics = (pb.blockData() instanceof MultipleFacing || pb.blockData() instanceof Wall);
             pb.targetBlock().setBlockData(pb.blockData(), applyPhysics);
-            applyContainerData(pb.targetBlock(), pb.snapshot());
         }
 
+        // ПРОХОД 2: верхние половины дверей/кроватей и навесной декор
         for (PreparedBlock pb : passTwo) {
             pb.targetBlock().setBlockData(pb.blockData(), false);
-            applyContainerData(pb.targetBlock(), pb.snapshot());
+        }
+
+        // ПРОХОД 3: ВСЕ блоки уже в мире, двойные сундуки соединились — теперь безопасно восстанавливаем вещи
+        for (PreparedBlock pb : passThreeContainers) {
+            applyContainerData(pb.targetBlock(), pb.snapshot(), pb.items());
         }
     }
 
-    private void applyContainerData(Block block, BlockState snapshot) {
-        if (snapshot instanceof Container oldContainer) {
-            if (block.getState() instanceof Container newContainer) {
-                newContainer.getInventory().setContents(oldContainer.getSnapshotInventory().getContents());
-                newContainer.update();
+    private void applyContainerData(Block block, BlockState snapshot, ItemStack[] items) {
+        if (block.getState() instanceof Container newContainer) {
+            if (items != null) {
+                Inventory inv = (newContainer instanceof org.bukkit.block.Chest chest)
+                        ? chest.getBlockInventory()
+                        : newContainer.getInventory();
+                inv.setContents(items);
             }
+            newContainer.update(true, false);
         }
 
         if (snapshot instanceof org.bukkit.block.Lectern oldLectern) {
