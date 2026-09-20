@@ -1,5 +1,6 @@
 package com.dagxam.moveship;
 
+import com.dagxam.moveship.core.ShipManager;
 import com.dagxam.moveship.listeners.ShipControllerListener;
 import com.dagxam.moveship.listeners.ShipGUIListener;
 import com.dagxam.moveship.listeners.ShipMovementListener;
@@ -36,7 +37,7 @@ public class MoveShipPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new ShipControllerListener(), this);
         getServer().getPluginManager().registerEvents(new ShipGUIListener(), this);
         
-        // Инициализируем наш слушатель пакетов WASD
+        // Инициализируем слушатель пакетов WASD
         new ShipMovementListener(this);
 
         getLogger().info("MoveShip плагин успешно запущен!");
@@ -44,6 +45,8 @@ public class MoveShipPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        // КРИТИЧНО: Спасаем и принудительно паркуем все корабли при рестарте сервера или /reload
+        ShipManager.stopAllShips();
         getLogger().info("MoveShip плагин отключен.");
     }
 
@@ -58,6 +61,10 @@ public class MoveShipPlugin extends JavaPlugin {
         }
 
         NamespacedKey recipeKey = new NamespacedKey(this, "ship_controller_recipe");
+        
+        // Удаляем старый рецепт, если он существует (защита от варнов при /reload)
+        Bukkit.removeRecipe(recipeKey);
+
         ShapedRecipe recipe = new ShapedRecipe(recipeKey, controllerItem);
         
         recipe.shape("PPP", "LLL");
