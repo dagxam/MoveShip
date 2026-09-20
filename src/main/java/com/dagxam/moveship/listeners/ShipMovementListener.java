@@ -6,7 +6,6 @@ import com.comphenix.protocol.ProtocolManager;
 import com.comphenix.protocol.events.ListenerPriority;
 import com.comphenix.protocol.events.PacketAdapter;
 import com.comphenix.protocol.events.PacketEvent;
-import com.comphenix.protocol.reflect.StructureModifier;
 import com.dagxam.moveship.MoveShipPlugin;
 import com.dagxam.moveship.core.ActiveShip;
 import com.dagxam.moveship.core.ShipManager;
@@ -17,137 +16,201 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDismountEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
 public class ShipMovementListener implements Listener {
 
+    private final MoveShipPlugin plugin;
+
     public ShipMovementListener(MoveShipPlugin plugin) {
+        this.plugin = plugin;
         Bukkit.getPluginManager().registerEvents(this, plugin);
 
-        ProtocolManager protocolManager = ProtocolLibrary.getProtocolManager();
+        ProtocolManager pm = ProtocolLibrary.getProtocolManager();
 
-        protocolManager.addPacketListener(new PacketAdapter(
-                plugin,
-                ListenerPriority.HIGHEST,
-                PacketType.Play.Client.STEER_VEHICLE
-        ) {
+        // Paper 1.21.4 использует PLAYER_INPUT вместо STEER_VEHICLE
+        PacketType inputPacket;
+        try {
+            // Пробуем новый тип пакета (1.21+)
+            inputPacket = PacketType.Play.Client.PLAYER_INPUT;
+        } catch (Exception e) {
+            // Fallback для старых версий
+            inputPacket = PacketType.Play.Client.STEER_VEHICLE;
+        }
+
+        final PacketType finalPacket = inputPacket;
+
+        pm.addPacketListener(new PacketAdapter(plugin, ListenerPriority.HIGHEST, finalPacket) {
             @Override
             public void onPacketReceiving(PacketEvent event) {
                 Player player = event.getPlayer();
-                ActiveShip ship = ShipManager.getShip(player);
-                if (ship == null) return;
+                if (ShipManager.getShip(player) == null) return;
 
-                boolean fwd = false;
-                boolean bwd = false;
-                boolean left = false;
-                boolean right = false;
+                boolean fwd = false, bwd = false, left = false, right = false;
 
                 try {
                     Object handle = event.getPacket().getHandle();
-                    Object input = null;
 
-                    try {
-                        Method inputMethod = handle.getClass().getMethod("input");
-                        input = inputMethod.invoke(handle);
-                    } catch (NoSuchMethodException ignored) {
-                        try {
-                            var field = handle.getClass().getDeclaredField("input");
-                            field.setAccessible(true);
-                            input = field.get(handle);
-                        } catch (Exception ignored2) {
-                            StructureModifier<Object> mod = event.getPacket().getModifier();
-                            if (mod.size() > 0) {
-                                input = mod.read(0);
-                            }
-                        }
-                    }
+                    // Paper 1.21.4: ServerboundPlayerInputPacket
+                    // Поля: xxa (strafe), zza (forward), jumping, shiftKeyDown
+                    // ИЛИ Input record с forward/backward/left/right
+
+                    // Сначала пробуем найти Input record
+                    Object input = findInputObject(handle);
 
                     if (input != null) {
-                        fwd = readBool(input, "forward", "getForward", 0);
-                        bwd = readBool(input, "backward", "getBackward", 1);
-                        left = readBool(input, "left", "getLeft", 2);
-                        right = readBool(input, "right", "getRight", 3);
+                        // Input record (1.20.5+)
+                        fwd   = getBool(input, "forward",  "isForward",  0);
+                        bwd   = getBool(input, "backward", "isBackward", 1);
+                        left  = getBool(input, "left",     "isLeft",     2);
+                        right = getBool(input, "right",    "isRight",    3);
                     } else {
-                        Float sideVal = event.getPacket().getFloat().readSafely(0);
-                        Float forwardVal = event.getPacket().getFloat().readSafely(1);
-                        if (forwardVal != null) {
-                            fwd = forwardVal > 0.01f;
-                            bwd = forwardVal < -0.01f;
-                        }
-                        if (sideVal != null) {
-                            left = sideVal > 0.01f;
-                            right = sideVal < -0.01f;
+                        // Прямые float поля (legacy или 1.21.4 без Input record)
+                        // zza = forward/backward, xxa = left/right (strafe)
+                        Float zza = getFloatField(handle, "zza", 1);
+                        Float xxa = getFloatField(handle, "xxa", 0);
+
+                        if (zza != null) { fwd = zza > 0.01f; bwd = zza < -0.01f; }
+                        if (xxa != null) {
+                            // xxa > 0 = вправо (D), xxa < 0 = влево (A)
+                            left  = xxa < -0.01f;
+                            right = xxa > 0.01f;
                         }
                     }
+
+                    // Диагностика (раскомментируй если нужно проверить пакеты)
+                    // plugin.getLogger().info("Input: fwd=" + fwd + " bwd=" + bwd + " L=" + left + " R=" + right);
+
                 } catch (Exception ex) {
-                    try {
-                        Float sideVal = event.getPacket().getFloat().readSafely(0);
-                        Float forwardVal = event.getPacket().getFloat().readSafely(1);
-                        if (forwardVal != null) {
-                            fwd = forwardVal > 0.01f;
-                            bwd = forwardVal < -0.01f;
-                        }
-                        if (sideVal != null) {
-                            left = sideVal > 0.01f;
-                            right = sideVal < -0.01f;
-                        }
-                    } catch (Exception ignored) {
-                    }
+                    plugin.getLogger().warning("Packet parse error: " + ex.getMessage());
                 }
 
-                final boolean f = fwd;
-                final boolean b = bwd;
-                final boolean l = left;
-                final boolean r = right;
+                final boolean F = fwd, B = bwd, L = left, R = right;
 
                 Bukkit.getScheduler().runTask(plugin, () -> {
-                    ActiveShip active = ShipManager.getShip(player);
-                    if (active != null) {
-                        active.setInput(f, b, l, r);
-                    }
+                    ActiveShip ship = ShipManager.getShip(player);
+                    if (ship != null) ship.setInput(F, B, L, R);
                 });
             }
         });
     }
 
-    private static boolean readBool(Object input, String recordName, String getterName, int recordIndex) {
+    // Ищем объект типа Input внутри пакета
+    private static Object findInputObject(Object handle) {
+        // Способ 1: метод input()
         try {
-            Method m = input.getClass().getMethod(recordName);
-            Object val = m.invoke(input);
-            if (val instanceof Boolean bool) return bool;
-        } catch (Exception ignored) {
-        }
+            Method m = handle.getClass().getMethod("input");
+            return m.invoke(handle);
+        } catch (Exception ignored) {}
+
+        // Способ 2: поле с именем "input"
         try {
-            Method m = input.getClass().getMethod(getterName);
-            Object val = m.invoke(input);
-            if (val instanceof Boolean bool) return bool;
-        } catch (Exception ignored) {
-        }
+            Field f = handle.getClass().getDeclaredField("input");
+            f.setAccessible(true);
+            return f.get(handle);
+        } catch (Exception ignored) {}
+
+        // Способ 3: ищем поле тип которого содержит "input" в названии класса
         try {
-            var fields = input.getClass().getDeclaredFields();
-            if (recordIndex < fields.length) {
-                fields[recordIndex].setAccessible(true);
-                Object val = fields[recordIndex].get(input);
-                if (val instanceof Boolean bool) return bool;
+            for (Field f : handle.getClass().getDeclaredFields()) {
+                f.setAccessible(true);
+                Object val = f.get(handle);
+                if (val != null && val.getClass().getSimpleName()
+                                     .toLowerCase().contains("input")) {
+                    return val;
+                }
             }
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
+
+        return null;
+    }
+
+    // Читаем boolean из объекта Input по имени поля или индексу
+    private static boolean getBool(Object obj, String name, String getter, int idx) {
+        // 1. По имени record-метода
         try {
-            String s = input.toString().toLowerCase();
-            return s.contains(recordName.toLowerCase() + "=true");
-        } catch (Exception ignored) {
-        }
+            Method m = obj.getClass().getDeclaredMethod(name);
+            m.setAccessible(true);
+            Object v = m.invoke(obj);
+            if (v instanceof Boolean b) return b;
+        } catch (Exception ignored) {}
+
+        // 2. По имени getter-метода
+        try {
+            Method m = obj.getClass().getDeclaredMethod(getter);
+            m.setAccessible(true);
+            Object v = m.invoke(obj);
+            if (v instanceof Boolean b) return b;
+        } catch (Exception ignored) {}
+
+        // 3. По индексу поля
+        try {
+            Field[] fields = obj.getClass().getDeclaredFields();
+            if (idx < fields.length) {
+                fields[idx].setAccessible(true);
+                Object v = fields[idx].get(obj);
+                if (v instanceof Boolean b) return b;
+            }
+        } catch (Exception ignored) {}
+
+        // 4. toString как последний шанс
+        try {
+            return obj.toString().contains(name + "=true");
+        } catch (Exception ignored) {}
+
         return false;
+    }
+
+    // Читаем float поле из пакета напрямую
+    private static Float getFloatField(Object handle, String name, int fallbackIdx) {
+        try {
+            Field f = handle.getClass().getDeclaredField(name);
+            f.setAccessible(true);
+            Object v = f.get(handle);
+            if (v instanceof Float fl) return fl;
+        } catch (Exception ignored) {}
+
+        try {
+            Field[] fields = handle.getClass().getDeclaredFields();
+            // Ищем float поля
+            int floatCount = 0;
+            for (Field f : fields) {
+                if (f.getType() == float.class) {
+                    if (floatCount == fallbackIdx) {
+                        f.setAccessible(true);
+                        return f.getFloat(handle);
+                    }
+                    floatCount++;
+                }
+            }
+        } catch (Exception ignored) {}
+
+        // ProtocolLib fallback
+        try {
+            return PacketType.Play.Client.STEER_VEHICLE.equals(
+                PacketType.Play.Client.STEER_VEHICLE)
+                ? null : null;
+        } catch (Exception ignored) {}
+
+        return null;
     }
 
     @EventHandler
     public void onDismount(EntityDismountEvent event) {
         if (!(event.getEntity() instanceof Player player)) return;
-
         if (ShipManager.getShip(player) != null) {
             ShipManager.stopShip(player);
-            player.sendMessage(Component.text("Вы покинули штурвал. Корабль зафиксирован.", NamedTextColor.YELLOW));
+            player.sendMessage(Component.text(
+                "Вы покинули штурвал. Корабль зафиксирован.", NamedTextColor.YELLOW));
         }
+    }
+
+    // КРИТИЧНО: паркуем корабль если игрок вышел с сервера
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        ShipManager.stopShip(event.getPlayer());
     }
 }
