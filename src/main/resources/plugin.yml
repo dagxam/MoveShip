@@ -5,5 +5,3 @@ api-version: '1.21'
 authors:
   - Dagxam
 description: Управляемые корабли на BlockDisplays.
-depend:
-  - ProtocolLib
