@@ -1,121 +1,124 @@
 package com.dagxam.moveship.listeners;
 
-import com.comphenix.protocol.PacketType;
-import com.comphenix.protocol.ProtocolLibrary;
-import com.comphenix.protocol.events.ListenerPriority;
-import com.comphenix.protocol.events.PacketAdapter;
-import com.comphenix.protocol.events.PacketEvent;
 import com.dagxam.moveship.MoveShipPlugin;
-import com.dagxam.moveship.core.ActiveShip;
 import com.dagxam.moveship.core.ShipManager;
+import com.dagxam.moveship.core.ShipScanner;
+import com.dagxam.moveship.gui.ShipGUI;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
-import org.bukkit.Bukkit;
+import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
-import org.bukkit.event.entity.EntityDismountEvent;
-import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
-public class ShipMovementListener implements Listener {
+public class ShipGUIListener implements Listener {
 
-    public ShipMovementListener(MoveShipPlugin plugin) {
-        Bukkit.getPluginManager().registerEvents(this, plugin);
-
-        ProtocolLibrary.getProtocolManager().addPacketListener(
-            new PacketAdapter(plugin, ListenerPriority.HIGHEST,
-                              PacketType.Play.Client.STEER_VEHICLE) {
-                @Override
-                public void onPacketReceiving(PacketEvent event) {
-                    Player player = event.getPlayer();
-                    if (ShipManager.getShip(player) == null) return;
-
-                    boolean fwd = false, bwd = false, left = false, right = false;
-
-                    try {
-                        Object handle = event.getPacket().getHandle();
-                        // Paper 1.20.6: ServerboundPlayerInputPacket
-                        // содержит поле типа Input (record с полями forward,backward,left,right)
-                        Object input = null;
-
-                        // Пробуем получить объект Input разными способами
-                        for (Field field : handle.getClass().getDeclaredFields()) {
-                            field.setAccessible(true);
-                            Object val = field.get(handle);
-                            if (val != null && val.getClass().getSimpleName()
-                                                  .toLowerCase().contains("input")) {
-                                input = val;
-                                break;
-                            }
-                        }
-
-                        if (input != null) {
-                            // Paper 1.20.6 Input record: forward, backward, left, right
-                            fwd   = getBool(input, "forward",  0);
-                            bwd   = getBool(input, "backward", 1);
-                            // ВАЖНО: в пакете left/right относительно экрана,
-                            // нам нужно: left=A (нос влево), right=D (нос вправо)
-                            left  = getBool(input, "left",     2);
-                            right = getBool(input, "right",    3);
-                        } else {
-                            // Legacy (до 1.20.5): float sideway, float forward
-                            Float side = event.getPacket().getFloat().readSafely(0);
-                            Float forw = event.getPacket().getFloat().readSafely(1);
-                            if (forw != null) { fwd = forw > 0.01f; bwd = forw < -0.01f; }
-                            if (side != null) { left = side > 0.01f; right = side < -0.01f; }
-                        }
-                    } catch (Exception ex) {
-                        plugin.getLogger().warning("STEER parse error: " + ex.getMessage());
-                    }
-
-                    final boolean F = fwd, B = bwd, L = left, R = right;
-                    Bukkit.getScheduler().runTask(plugin, () -> {
-                        ActiveShip ship = ShipManager.getShip(player);
-                        if (ship != null) ship.setInput(F, B, L, R);
-                    });
-                }
-            });
-    }
-
-    private static boolean getBool(Object obj, String fieldName, int fallbackIndex) {
-        // 1) по имени поля/метода record
-        try {
-            Method m = obj.getClass().getDeclaredMethod(fieldName);
-            m.setAccessible(true);
-            Object v = m.invoke(obj);
-            if (v instanceof Boolean b) return b;
-        } catch (Exception ignored) {}
-        // 2) по индексу поля
-        try {
-            Field[] fields = obj.getClass().getDeclaredFields();
-            if (fallbackIndex < fields.length) {
-                fields[fallbackIndex].setAccessible(true);
-                Object v = fields[fallbackIndex].get(obj);
-                if (v instanceof Boolean b) return b;
-            }
-        } catch (Exception ignored) {}
-        // 3) toString последний шанс
-        try {
-            return obj.toString().contains(fieldName + "=true");
-        } catch (Exception ignored) {}
-        return false;
-    }
+    // Храним результат сканирования пока игрок не нажал Активировать
+    private static final Map<UUID, Set<Block>> scannedShips = new HashMap<>();
+    private static final Map<UUID, Location>   scannedCores = new HashMap<>();
 
     @EventHandler
-    public void onDismount(EntityDismountEvent event) {
-        if (!(event.getEntity() instanceof Player player)) return;
-        if (ShipManager.getShip(player) != null) {
-            ShipManager.stopShip(player);
-            player.sendMessage(Component.text(
-                "Вы покинули штурвал. Корабль зафиксирован.", NamedTextColor.YELLOW));
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+        if (!(event.getInventory().getHolder() instanceof ShipGUI gui)) return;
+
+        // Отменяем любое перемещение предметов в GUI
+        event.setCancelled(true);
+
+        if (event.getCurrentItem() == null) return;
+        Material clicked = event.getCurrentItem().getType();
+
+        switch (clicked) {
+
+            // ── СКАНИРОВАТЬ (слот 0) ──────────────────────────────────────
+            case COMPASS -> {
+                Location core = gui.getCoreLocation();
+                player.closeInventory();
+
+                Set<Block> found = ShipScanner.scanShip(core);
+
+                if (found.isEmpty()) {
+                    player.sendMessage(Component.text(
+                        "Блоки корабля не найдены вокруг кафедры!", NamedTextColor.RED));
+                    return;
+                }
+
+                scannedShips.put(player.getUniqueId(), found);
+                scannedCores.put(player.getUniqueId(), core);
+
+                player.sendMessage(Component.text(
+                    "Корабль отсканирован: " + found.size() + " блоков. Нажмите «Активировать».",
+                    NamedTextColor.AQUA));
+            }
+
+            // ── АКТИВИРОВАТЬ (слот 3) ─────────────────────────────────────
+            case LIME_WOOL -> {
+                UUID uuid = player.getUniqueId();
+
+                // Если уже плывёт — игнорируем
+                if (ShipManager.getShip(player) != null) {
+                    player.sendMessage(Component.text(
+                        "Корабль уже активирован!", NamedTextColor.YELLOW));
+                    player.closeInventory();
+                    return;
+                }
+
+                Set<Block> blocks = scannedShips.get(uuid);
+                Location   core   = scannedCores.get(uuid);
+
+                if (blocks == null || core == null) {
+                    player.sendMessage(Component.text(
+                        "Сначала отсканируйте корабль!", NamedTextColor.RED));
+                    player.closeInventory();
+                    return;
+                }
+
+                player.closeInventory();
+
+                boolean ok = ShipManager.activateShip(player, core, blocks);
+                if (ok) {
+                    scannedShips.remove(uuid);
+                    scannedCores.remove(uuid);
+                    player.sendMessage(Component.text(
+                        "Корабль активирован! W/S — движение, A/D — поворот.",
+                        NamedTextColor.GREEN));
+                } else {
+                    player.sendMessage(Component.text(
+                        "Не удалось активировать корабль.", NamedTextColor.RED));
+                }
+            }
+
+            // ── ОСТАНОВИТЬ (слот 5) ───────────────────────────────────────
+            case RED_WOOL -> {
+                player.closeInventory();
+                if (ShipManager.getShip(player) != null) {
+                    ShipManager.stopShip(player);
+                    player.sendMessage(Component.text(
+                        "Корабль зафиксирован.", NamedTextColor.YELLOW));
+                } else {
+                    player.sendMessage(Component.text(
+                        "Корабль не активирован.", NamedTextColor.GRAY));
+                }
+            }
+
+            // ── ВЫХОД (слот 8) ────────────────────────────────────────────
+            case BARRIER -> player.closeInventory();
+
+            default -> { /* другие слоты — игнорируем */ }
         }
     }
 
     @EventHandler
-    public void onQuit(PlayerQuitEvent event) {
-        ShipManager.stopShip(event.getPlayer());
+    public void onInventoryClose(InventoryCloseEvent event) {
+        // Ничего не делаем при закрытии — данные сканирования храним до активации
     }
 }
