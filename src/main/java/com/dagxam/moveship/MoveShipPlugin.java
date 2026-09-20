@@ -25,9 +25,8 @@ public class MoveShipPlugin extends JavaPlugin {
     public void onEnable() {
         CONTROLLER_KEY = new NamespacedKey(this, "ship_controller");
 
-        // Проверяем, установлен ли ProtocolLib на сервере
         if (getServer().getPluginManager().getPlugin("ProtocolLib") == null) {
-            getLogger().severe("Для работы плагина необходим ProtocolLib! Плагин отключается.");
+            getLogger().severe("Необходим ProtocolLib! Плагин отключается.");
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
@@ -36,24 +35,20 @@ public class MoveShipPlugin extends JavaPlugin {
 
         getServer().getPluginManager().registerEvents(new ShipControllerListener(), this);
         getServer().getPluginManager().registerEvents(new ShipGUIListener(), this);
-        
-        // Инициализируем слушатель пакетов WASD
         new ShipMovementListener(this);
 
-        getLogger().info("MoveShip плагин успешно запущен!");
+        getLogger().info("MoveShip запущен!");
     }
 
     @Override
     public void onDisable() {
-        // КРИТИЧНО: Спасаем и принудительно паркуем все корабли при рестарте сервера или /reload
         ShipManager.stopAllShips();
-        getLogger().info("MoveShip плагин отключен.");
+        getLogger().info("MoveShip отключен.");
     }
 
     private void registerShipControllerRecipe() {
         ItemStack controllerItem = new ItemStack(Material.LECTERN);
         ItemMeta meta = controllerItem.getItemMeta();
-        
         if (meta != null) {
             meta.displayName(Component.text("Кафедра управления", NamedTextColor.GOLD));
             meta.getPersistentDataContainer().set(CONTROLLER_KEY, PersistentDataType.BYTE, (byte) 1);
@@ -61,16 +56,12 @@ public class MoveShipPlugin extends JavaPlugin {
         }
 
         NamespacedKey recipeKey = new NamespacedKey(this, "ship_controller_recipe");
-        
-        // Удаляем старый рецепт, если он существует (защита от варнов при /reload)
         Bukkit.removeRecipe(recipeKey);
 
         ShapedRecipe recipe = new ShapedRecipe(recipeKey, controllerItem);
-        
         recipe.shape("PPP", "LLL");
         recipe.setIngredient('P', new RecipeChoice.MaterialChoice(Tag.PLANKS));
         recipe.setIngredient('L', new RecipeChoice.MaterialChoice(Tag.LOGS));
-
         Bukkit.addRecipe(recipe);
     }
 }
