@@ -28,10 +28,11 @@
     </repositories>
 
     <dependencies>
+        <!-- Используем 1.21.4 для компиляции — совместимо с Paper 26.3 -->
         <dependency>
             <groupId>io.papermc.paper</groupId>
             <artifactId>paper-api</artifactId>
-            <version>26.3-R0.1-SNAPSHOT</version>
+            <version>1.21.4-R0.1-SNAPSHOT</version>
             <scope>provided</scope>
         </dependency>
     </dependencies>
