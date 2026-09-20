@@ -44,15 +44,15 @@ public class ActiveShip {
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
 
-    // Физика лодки: уверенный разгон, мягкое скольжение и естественные повороты
+    // Физика лодки: уверенный разгон, комфортная скорость и мягкое скольжение по воде
     private static final double MAX_SPEED = 0.45;
     private static final double MAX_REVERSE_SPEED = 0.20;
     private static final double ACCELERATION = 0.03;
-    private static final double WATER_FRICTION = 0.96; // Инерция скольжения по воде
+    private static final double WATER_FRICTION = 0.96; // Инерция лодки
 
     private static final float MAX_TURN_SPEED = 2.8f;
     private static final float TURN_ACCEL = 0.40f;
-    private static final float TURN_FRICTION = 0.82f;
+    private static final float TURN_FRICTION = 0.80f;
 
     private Location currentAnchorCenter;
     private final Vector initialSeatOffset; 
@@ -63,11 +63,16 @@ public class ActiveShip {
     private double currentSpeed = 0.0;
     private float currentTurnSpeed = 0.0f;
 
-    // Счётчики удержания клавиш для защиты от сетевых сбросов (Debounce)
-    private int forwardTicksLeft = 0;
-    private int backwardTicksLeft = 0;
-    private int leftTicksLeft = 0;
-    private int rightTicksLeft = 0;
+    // Постоянные состояния удержания клавиш WASD
+    private boolean pressingForward = false;
+    private boolean pressingBackward = false;
+    private boolean pressingLeft = false;
+    private boolean pressingRight = false;
+
+    // Таймеры защитной задержки на случай микро-сбросов пакетов клиентом
+    private int forwardReleaseGrace = -1;
+    private int backwardReleaseGrace = -1;
+    private int sideReleaseGrace = -1;
     
     private final BukkitTask movementTask; 
 
@@ -88,7 +93,7 @@ public class ActiveShip {
         this.shipYaw = pilot.getLocation().getYaw();
         this.initialShipYaw = this.shipYaw;
 
-        // Фиксация сиденья: высота выверена так, чтобы пилот сидел прямо на палубе с чистым обзором
+        // Посадка пилота: высота выверена так, чтобы ноги касались палубы, а обзор был чистым на 360°
         this.initialSeatOffset = pilot.getLocation().toVector().subtract(currentAnchorCenter.toVector());
         this.initialSeatOffset.setY(pilot.getLocation().getY() - currentAnchorCenter.getY() - 0.7); 
 
@@ -100,7 +105,7 @@ public class ActiveShip {
         this.coreEntity.setMarker(true); 
         this.coreEntity.setSmall(true);
 
-        // 1. Определение ватерлинии для кильватерного следа
+        // 1. Определение ватерлинии для предотвращения пустот в воде
         int seaLevel = Integer.MIN_VALUE;
         for (Block block : blocks) {
             for (BlockFace face : new BlockFace[]{BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.DOWN}) {
@@ -124,14 +129,13 @@ public class ActiveShip {
             }
         }
 
-        // 2. Глубокое сохранение инвентарей (контейнеров) и создание BlockDisplay
+        // 2. Глубокое сохранение инвентарей (сундуки, бочки, печи) и создание визуала BlockDisplay
         for (Block block : blocks) {
             Location blockCenter = block.getLocation().add(0.5, 0.0, 0.5);
             Vector offset = blockCenter.toVector().subtract(currentAnchorCenter.toVector());
 
             BlockState snapshot = block.getState();
 
-            // ГЛУБОКОЕ КЛОНИРОВАНИЕ ИНВЕНТАРЯ (СУНДУКИ, ПЕЧИ, БОЧКИ, ВОРОНКИ И Т.Д.)
             ItemStack[] savedItems = null;
             if (snapshot instanceof Container container) {
                 Inventory inv = (container instanceof org.bukkit.block.Chest chest)
@@ -142,10 +146,11 @@ public class ActiveShip {
                 for (int slot = 0; slot < inv.getSize(); slot++) {
                     ItemStack item = inv.getItem(slot);
                     if (item != null) {
-                        savedItems[slot] = item.clone(); // Независимая копия в памяти
+                        savedItems[slot] = item.clone(); // Глубокое клонирование
                     }
                 }
-                inv.clear(); // Очищаем мир, чтобы при удалении блока вещи не выпали на пол
+                inv.clear(); // Очищаем мир перед сносом, чтобы вещи не высыпались на пол
+                container.update(true, false);
             }
 
             originalBlocks.add(new ShipBlockData(offset, block.getBlockData(), snapshot, savedItems));
@@ -155,9 +160,9 @@ public class ActiveShip {
             BlockDisplay display = (BlockDisplay) currentAnchorCenter.getWorld().spawnEntity(blockCenter, EntityType.BLOCK_DISPLAY);
             display.setBlock(snapshot.getBlockData());
             
-            // Синхронизация: 1L таск и 1 тик интерполяции для 60 FPS
+            // 1L такт с интерполяцией 1 тик даёт абсолютно монолитное перемещение без сдвигов
             display.setTeleportDuration(1);
-            display.setInterpolationDuration(1);
+            display.setInterpolationDuration(0);
             display.setInterpolationDelay(0);
 
             Transformation transform = new Transformation(
@@ -175,33 +180,46 @@ public class ActiveShip {
 
         MoveShipPlugin plugin = JavaPlugin.getPlugin(MoveShipPlugin.class);
         
-        // 3. Такт мотора: 1 тик сервера (50 мс) с инерцией
+        // 3. Такт мотора: 1 тик сервера (50 мс) с полноценной физикой лодки
         this.movementTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             
-            boolean isForward = forwardTicksLeft > 0;
-            boolean isBackward = backwardTicksLeft > 0;
-            boolean isLeft = leftTicksLeft > 0;
-            boolean isRight = rightTicksLeft > 0;
+            // Обработка защитного таймера отпускания клавиш
+            if (forwardReleaseGrace > 0) {
+                forwardReleaseGrace--;
+            } else if (forwardReleaseGrace == 0) {
+                pressingForward = false;
+                forwardReleaseGrace = -1;
+            }
 
-            if (forwardTicksLeft > 0) forwardTicksLeft--;
-            if (backwardTicksLeft > 0) backwardTicksLeft--;
-            if (leftTicksLeft > 0) leftTicksLeft--;
-            if (rightTicksLeft > 0) rightTicksLeft--;
+            if (backwardReleaseGrace > 0) {
+                backwardReleaseGrace--;
+            } else if (backwardReleaseGrace == 0) {
+                pressingBackward = false;
+                backwardReleaseGrace = -1;
+            }
 
-            // Плавный разгон и инерция хода
-            if (isForward) {
+            if (sideReleaseGrace > 0) {
+                sideReleaseGrace--;
+            } else if (sideReleaseGrace == 0) {
+                pressingLeft = false;
+                pressingRight = false;
+                sideReleaseGrace = -1;
+            }
+
+            // Плавный разгон при удержании W/S и скольжение по воде
+            if (pressingForward) {
                 currentSpeed = Math.min(MAX_SPEED, currentSpeed + ACCELERATION);
-            } else if (isBackward) {
+            } else if (pressingBackward) {
                 currentSpeed = Math.max(-MAX_REVERSE_SPEED, currentSpeed - ACCELERATION);
             } else {
                 currentSpeed *= WATER_FRICTION;
                 if (Math.abs(currentSpeed) < 0.005) currentSpeed = 0.0;
             }
 
-            // Плавный поворот руля
-            if (isLeft) {
+            // Плавный поворот руля при удержании A/D
+            if (pressingLeft) {
                 currentTurnSpeed = Math.max(-MAX_TURN_SPEED, currentTurnSpeed - TURN_ACCEL);
-            } else if (isRight) {
+            } else if (pressingRight) {
                 currentTurnSpeed = Math.min(MAX_TURN_SPEED, currentTurnSpeed + TURN_ACCEL);
             } else {
                 currentTurnSpeed *= TURN_FRICTION;
@@ -244,22 +262,37 @@ public class ActiveShip {
         }, 0L, 1L);
     }
 
-    // Приём сетевого ввода с буфером на 6 тиков (устраняет фантомные сбросы клиентом)
+    // Приём сетевого ввода без ложных сбросов при удержании клавиш
     public void setInput(float forward, float side) {
         if (forward > 0) {
-            this.forwardTicksLeft = 6;
-            this.backwardTicksLeft = 0;
+            this.pressingForward = true;
+            this.pressingBackward = false;
+            this.forwardReleaseGrace = -1;
         } else if (forward < 0) {
-            this.backwardTicksLeft = 6;
-            this.forwardTicksLeft = 0;
+            this.pressingBackward = true;
+            this.pressingForward = false;
+            this.backwardReleaseGrace = -1;
+        } else {
+            if (this.pressingForward && this.forwardReleaseGrace == -1) {
+                this.forwardReleaseGrace = 5;
+            }
+            if (this.pressingBackward && this.backwardReleaseGrace == -1) {
+                this.backwardReleaseGrace = 5;
+            }
         }
 
         if (side > 0) {
-            this.leftTicksLeft = 6;
-            this.rightTicksLeft = 0;
+            this.pressingLeft = true;
+            this.pressingRight = false;
+            this.sideReleaseGrace = -1;
         } else if (side < 0) {
-            this.rightTicksLeft = 6;
-            this.leftTicksLeft = 0;
+            this.pressingRight = true;
+            this.pressingLeft = false;
+            this.sideReleaseGrace = -1;
+        } else {
+            if ((this.pressingLeft || this.pressingRight) && this.sideReleaseGrace == -1) {
+                this.sideReleaseGrace = 5;
+            }
         }
     }
 
@@ -302,8 +335,8 @@ public class ActiveShip {
         double newZ = initialSeatOffset.getX() * sin + initialSeatOffset.getZ() * cos;
 
         Location seatLoc = currentAnchorCenter.clone().add(newX, initialSeatOffset.getY(), newZ);
-        seatLoc.setYaw(pilot.getLocation().getYaw());
-        seatLoc.setPitch(pilot.getLocation().getPitch());
+        // Кресло зафиксировано по курсу судна: камера не дергается при движении
+        seatLoc.setYaw(this.shipYaw);
         return seatLoc;
     }
 
@@ -349,13 +382,16 @@ public class ActiveShip {
         }
     }
 
-    // ТРЁХПРОХОДНАЯ ПАРКОВКА: абсолютная гарантия сохранения сундуков, печек, бочек и дверей
+    // БЕЗОПАСНАЯ ПАРКОВКА: спасение игрока от проваливания + 3-проходное сохранение контейнеров
     public void restoreBlocks() {
         if (this.movementTask != null) {
             this.movementTask.cancel();
         }
 
+        // 1. СПАСЕНИЕ ИГРОКА: снимаем с кресла и поднимаем на +1.2 блока вверх
         coreEntity.removePassenger(pilot);
+        Location safePilotLoc = pilot.getLocation().clone().add(0, 1.2, 0);
+        pilot.teleport(safePilotLoc);
 
         for (Block remaining : submergedWakeBlocks) {
             remaining.setType(Material.WATER, true);
@@ -368,8 +404,6 @@ public class ActiveShip {
                 Math.floor(currentAnchorCenter.getY()), 
                 Math.floor(currentAnchorCenter.getZ()) + 0.5
         );
-
-        coreEntity.remove();
 
         float deltaYaw = this.shipYaw - this.initialShipYaw;
         int snappedDeltaYaw = Math.round(deltaYaw / 90.0f) * 90;
@@ -389,8 +423,6 @@ public class ActiveShip {
         for (int i = 0; i < displayEntities.size(); i++) {
             BlockDisplay display = displayEntities.get(i);
             ShipBlockData data = originalBlocks.get(i);
-
-            display.remove();
 
             Vector offset = data.getRelativeOffset();
             int dx = (int) Math.round(offset.getX() * cos - offset.getZ() * sin);
@@ -482,21 +514,34 @@ public class ActiveShip {
             }
         }
 
-        // ПРОХОД 1: каркас, твердые блоки, основания и заборы
+        // 2. ПРОХОД 1: Инициализация типа материала (setType) и BlockData для каркаса и полов
         for (PreparedBlock pb : passOne) {
             boolean applyPhysics = (pb.blockData() instanceof MultipleFacing || pb.blockData() instanceof Wall);
+            pb.targetBlock().setType(pb.blockData().getMaterial(), false);
             pb.targetBlock().setBlockData(pb.blockData(), applyPhysics);
         }
 
-        // ПРОХОД 2: верхние половины дверей/кроватей и навесной декор
+        // 3. ПРОХОД 2: Верхние половины дверей, кроватей и настенный декор
         for (PreparedBlock pb : passTwo) {
+            pb.targetBlock().setType(pb.blockData().getMaterial(), false);
             pb.targetBlock().setBlockData(pb.blockData(), false);
         }
 
-        // ПРОХОД 3: ВСЕ блоки уже в мире, двойные сундуки соединились — теперь безопасно восстанавливаем вещи
+        // 4. ПРОХОД 3: ВСЕ блоки стоят в мире, двойные сундуки соединены — восстанавливаем компоненты вещей
         for (PreparedBlock pb : passThreeContainers) {
             applyContainerData(pb.targetBlock(), pb.snapshot(), pb.items());
         }
+
+        // 5. Опускаем игрока на созданную твердую палубу (пропажа пола исключена)
+        Location deckLoc = safePilotLoc.clone();
+        deckLoc.setY(Math.floor(safePilotLoc.getY()) + 0.05);
+        pilot.teleport(deckLoc);
+
+        // 6. Удаляем голограммы Display-сущностей и кресло
+        for (BlockDisplay display : displayEntities) {
+            display.remove();
+        }
+        coreEntity.remove();
     }
 
     private void applyContainerData(Block block, BlockState snapshot, ItemStack[] items) {
@@ -507,7 +552,7 @@ public class ActiveShip {
                         : newContainer.getInventory();
                 inv.setContents(items);
             }
-            newContainer.update(true, false);
+            newContainer.update(true, false); // Принудительно сохраняем NBT/компоненты в чанк
         }
 
         if (snapshot instanceof org.bukkit.block.Lectern oldLectern) {
