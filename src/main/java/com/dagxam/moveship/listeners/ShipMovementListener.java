@@ -31,19 +31,12 @@ public class ShipMovementListener implements Listener {
 
         ProtocolManager pm = ProtocolLibrary.getProtocolManager();
 
-        // Paper 1.21.4 использует PLAYER_INPUT вместо STEER_VEHICLE
-        PacketType inputPacket;
-        try {
-            // Пробуем новый тип пакета (1.21+)
-            inputPacket = PacketType.Play.Client.PLAYER_INPUT;
-        } catch (Exception e) {
-            // Fallback для старых версий
-            inputPacket = PacketType.Play.Client.STEER_VEHICLE;
-        }
-
-        final PacketType finalPacket = inputPacket;
-
-        pm.addPacketListener(new PacketAdapter(plugin, ListenerPriority.HIGHEST, finalPacket) {
+        // ProtocolLib 5.3.0 использует STEER_VEHICLE для всех версий MC
+        pm.addPacketListener(new PacketAdapter(
+                plugin,
+                ListenerPriority.HIGHEST,
+                PacketType.Play.Client.STEER_VEHICLE
+        ) {
             @Override
             public void onPacketReceiving(PacketEvent event) {
                 Player player = event.getPlayer();
@@ -54,42 +47,31 @@ public class ShipMovementListener implements Listener {
                 try {
                     Object handle = event.getPacket().getHandle();
 
-                    // Paper 1.21.4: ServerboundPlayerInputPacket
-                    // Поля: xxa (strafe), zza (forward), jumping, shiftKeyDown
-                    // ИЛИ Input record с forward/backward/left/right
-
-                    // Сначала пробуем найти Input record
+                    // Пробуем найти Input record (Paper 1.20.5+)
                     Object input = findInputObject(handle);
 
                     if (input != null) {
-                        // Input record (1.20.5+)
+                        // Input record содержит: forward, backward, left, right
                         fwd   = getBool(input, "forward",  "isForward",  0);
                         bwd   = getBool(input, "backward", "isBackward", 1);
                         left  = getBool(input, "left",     "isLeft",     2);
                         right = getBool(input, "right",    "isRight",    3);
                     } else {
-                        // Прямые float поля (legacy или 1.21.4 без Input record)
-                        // zza = forward/backward, xxa = left/right (strafe)
-                        Float zza = getFloatField(handle, "zza", 1);
-                        Float xxa = getFloatField(handle, "xxa", 0);
-
-                        if (zza != null) { fwd = zza > 0.01f; bwd = zza < -0.01f; }
-                        if (xxa != null) {
-                            // xxa > 0 = вправо (D), xxa < 0 = влево (A)
-                            left  = xxa < -0.01f;
-                            right = xxa > 0.01f;
-                        }
+                        // Старый формат: float[] sideway(0), forward(1)
+                        Float side = event.getPacket().getFloat().readSafely(0);
+                        Float forw = event.getPacket().getFloat().readSafely(1);
+                        if (forw != null) { fwd = forw > 0.01f; bwd = forw < -0.01f; }
+                        if (side != null) { left = side > 0.01f; right = side < -0.01f; }
                     }
 
-                    // Диагностика (раскомментируй если нужно проверить пакеты)
-                    // plugin.getLogger().info("Input: fwd=" + fwd + " bwd=" + bwd + " L=" + left + " R=" + right);
+                    // Раскомментируй для диагностики пакетов:
+                    // plugin.getLogger().info("fwd=" + fwd + " bwd=" + bwd + " L=" + left + " R=" + right);
 
                 } catch (Exception ex) {
                     plugin.getLogger().warning("Packet parse error: " + ex.getMessage());
                 }
 
                 final boolean F = fwd, B = bwd, L = left, R = right;
-
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     ActiveShip ship = ShipManager.getShip(player);
                     if (ship != null) ship.setInput(F, B, L, R);
@@ -98,7 +80,6 @@ public class ShipMovementListener implements Listener {
         });
     }
 
-    // Ищем объект типа Input внутри пакета
     private static Object findInputObject(Object handle) {
         // Способ 1: метод input()
         try {
@@ -106,14 +87,14 @@ public class ShipMovementListener implements Listener {
             return m.invoke(handle);
         } catch (Exception ignored) {}
 
-        // Способ 2: поле с именем "input"
+        // Способ 2: поле "input"
         try {
             Field f = handle.getClass().getDeclaredField("input");
             f.setAccessible(true);
             return f.get(handle);
         } catch (Exception ignored) {}
 
-        // Способ 3: ищем поле тип которого содержит "input" в названии класса
+        // Способ 3: поле тип которого содержит "input" в имени класса
         try {
             for (Field f : handle.getClass().getDeclaredFields()) {
                 f.setAccessible(true);
@@ -128,7 +109,6 @@ public class ShipMovementListener implements Listener {
         return null;
     }
 
-    // Читаем boolean из объекта Input по имени поля или индексу
     private static boolean getBool(Object obj, String name, String getter, int idx) {
         // 1. По имени record-метода
         try {
@@ -138,7 +118,7 @@ public class ShipMovementListener implements Listener {
             if (v instanceof Boolean b) return b;
         } catch (Exception ignored) {}
 
-        // 2. По имени getter-метода
+        // 2. По имени getter
         try {
             Method m = obj.getClass().getDeclaredMethod(getter);
             m.setAccessible(true);
@@ -156,46 +136,12 @@ public class ShipMovementListener implements Listener {
             }
         } catch (Exception ignored) {}
 
-        // 4. toString как последний шанс
+        // 4. toString
         try {
             return obj.toString().contains(name + "=true");
         } catch (Exception ignored) {}
 
         return false;
-    }
-
-    // Читаем float поле из пакета напрямую
-    private static Float getFloatField(Object handle, String name, int fallbackIdx) {
-        try {
-            Field f = handle.getClass().getDeclaredField(name);
-            f.setAccessible(true);
-            Object v = f.get(handle);
-            if (v instanceof Float fl) return fl;
-        } catch (Exception ignored) {}
-
-        try {
-            Field[] fields = handle.getClass().getDeclaredFields();
-            // Ищем float поля
-            int floatCount = 0;
-            for (Field f : fields) {
-                if (f.getType() == float.class) {
-                    if (floatCount == fallbackIdx) {
-                        f.setAccessible(true);
-                        return f.getFloat(handle);
-                    }
-                    floatCount++;
-                }
-            }
-        } catch (Exception ignored) {}
-
-        // ProtocolLib fallback
-        try {
-            return PacketType.Play.Client.STEER_VEHICLE.equals(
-                PacketType.Play.Client.STEER_VEHICLE)
-                ? null : null;
-        } catch (Exception ignored) {}
-
-        return null;
     }
 
     @EventHandler
@@ -208,7 +154,6 @@ public class ShipMovementListener implements Listener {
         }
     }
 
-    // КРИТИЧНО: паркуем корабль если игрок вышел с сервера
     @EventHandler
     public void onQuit(PlayerQuitEvent event) {
         ShipManager.stopShip(event.getPlayer());
