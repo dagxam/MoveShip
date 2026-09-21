@@ -326,9 +326,13 @@ public class ActiveShip {
          * положение игрока на штурвале. Это предотвращает накопление
          * микросмещения пассажира.
          */
-        if (moved) {
-            updateSeat();
+        /*
+         * Штурвал поддерживается каждый тик, даже в покое.
+         * Это не даёт игроку накапливать микросмещение от физики/плагинов.
+         */
+        updateSeat();
 
+        if (moved) {
             /*
              * Корпус обновляется КАЖДЫЙ тик:
              * это одновременно перемещение и вращение.
@@ -473,7 +477,6 @@ public class ActiveShip {
             location.setY(centerY - 0.5);
             location.setZ(centerZ - 0.5);
 
-            display.setTeleportDuration(1);
             display.teleport(location);
 
             Matrix4f matrix = displayMatrices.get(i);
@@ -483,8 +486,6 @@ public class ActiveShip {
                     .rotateY(rotation)
                     .translate(-0.5f, -0.5f, -0.5f);
 
-            display.setInterpolationDelay(0);
-            display.setInterpolationDuration(1);
             display.setTransformationMatrix(matrix);
         }
     }
