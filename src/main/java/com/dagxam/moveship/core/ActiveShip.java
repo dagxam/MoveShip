@@ -81,7 +81,7 @@ public class ActiveShip {
      * через teleportDuration и отдельно сглаживать Transformation.
      */
     private static final int DISPLAY_TELEPORT_DURATION = 4;
-    private static final int DISPLAY_INTERPOLATION_DURATION = 2;
+    private static final int DISPLAY_INTERPOLATION_DURATION = 0;
 
     private final Player pilot;
     private final MoveShipPlugin plugin;
@@ -732,7 +732,12 @@ public class ActiveShip {
              * Transformation интерполируется отдельно от teleport.
              * Это сглаживает именно поворот корпуса.
              */
-            display.setInterpolationDelay(0);
+            /*
+             * Вперед/назад сглаживаются teleportDuration.
+             * Transformation не интерполируем, чтобы не смешивать
+             * две системы движения.
+             */
+            display.setInterpolationDelay(-1);
             display.setInterpolationDuration(
                     DISPLAY_INTERPOLATION_DURATION
             );
@@ -832,10 +837,20 @@ public class ActiveShip {
 
             if (data instanceof Directional directional) {
                 BlockFace facing =
-                        directional.getFacing();
+                        directional.getFacing()
+                                .getOppositeFace();
 
                 if (facing.getModX() != 0
                         || facing.getModZ() != 0) {
+                    /*
+                     * Lectern facing смотрит на сторону игрока.
+                     * Нос корабля направляем в противоположную сторону —
+                     * от игрока, от штурвала к носу.
+                     *
+                     * Minecraft yaw:
+                     * SOUTH = 0, WEST = 90,
+                     * NORTH = 180, EAST = -90.
+                     */
                     return norm(
                             (float) Math.toDegrees(
                                     Math.atan2(
