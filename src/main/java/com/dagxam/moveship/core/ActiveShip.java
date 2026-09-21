@@ -194,16 +194,9 @@ public class ActiveShip {
         /*
          * ShipCollision строится пока реальные блоки еще доступны.
          */
-        List<BoundingBox> localCollisionBoxes = new ArrayList<>();
-
-        for (ShipBlockData block : originalBlocks) {
-            localCollisionBoxes.addAll(
-                    block.getCollisionBoxes()
-            );
-        }
-
-        this.collisionModel = new ShipCollisionModel(
-                localCollisionBoxes
+        this.collisionModel = new ShipCollision(
+                originalBlocks,
+                anchorCenter
         );
 
         /*
@@ -439,33 +432,6 @@ public class ActiveShip {
      * Получает точные collision-boxes BlockData в мировой позиции
      * и переводит их в локальные координаты относительно anchorCenter.
      */
-    private static List<BoundingBox> captureLocalCollisionBoxes(
-            BlockData blockData,
-            Location blockLocation,
-            Location anchorCenter
-    ) {
-        List<BoundingBox> result = new ArrayList<>();
-
-        for (BoundingBox box :
-                blockData
-                        .getCollisionShape(blockLocation)
-                        .getBoundingBoxes()) {
-
-            result.add(
-                    new BoundingBox(
-                            box.getMinX() - anchorCenter.getX(),
-                            box.getMinY() - anchorCenter.getY(),
-                            box.getMinZ() - anchorCenter.getZ(),
-                            box.getMaxX() - anchorCenter.getX(),
-                            box.getMaxY() - anchorCenter.getY(),
-                            box.getMaxZ() - anchorCenter.getZ()
-                    )
-            );
-        }
-
-        return result;
-    }
-
     private Location anchorFromCarrier(
             Location carrierLocation,
             float yaw
