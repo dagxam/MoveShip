@@ -440,10 +440,24 @@ public class ActiveShip {
 
         Location seat = rootEntity.getLocation();
 
-        if (Math.abs(seat.getX() - seatX) > 0.0001
-                || Math.abs(seat.getY() - seatY) > 0.0001
-                || Math.abs(seat.getZ() - seatZ) > 0.0001) {
+        double dx = seatX - seat.getX();
+        double dy = seatY - seat.getY();
+        double dz = seatZ - seat.getZ();
 
+        /*
+         * ArmorStand не имеет Display-interpolation. Для игрока это особенно
+         * важно: teleport() каждый тик дает заметный ступенчатый перенос камеры.
+         *
+         * Поэтому обычное движение штурвала выполняется через Entity velocity.
+         * Velocity у Entity задается в блоках за тик и позволяет серверу вести
+         * пассажира непрерывно вместе с машиной.
+         *
+         * Если каким-либо плагином/телепортом возник большой рассинхрон,
+         * выполняем одну корректирующую телепортацию.
+         */
+        double errorSquared = dx * dx + dy * dy + dz * dz;
+
+        if (errorSquared > 0.75 * 0.75) {
             seat.setX(seatX);
             seat.setY(seatY);
             seat.setZ(seatZ);
@@ -451,6 +465,9 @@ public class ActiveShip {
             seat.setPitch(0.0f);
 
             rootEntity.teleport(seat);
+            rootEntity.setVelocity(new Vector());
+        } else {
+            rootEntity.setVelocity(new Vector(dx, dy, dz));
         }
 
         rootEntity.setRotation(0.0f, 0.0f);
