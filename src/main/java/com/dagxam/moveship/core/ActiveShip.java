@@ -356,21 +356,34 @@ public class ActiveShip {
             return;
         }
 
+        if (pilot.getVehicle() != rootEntity) {
+            restoreBlocks();
+            return;
+        }
+
+        /*
+         * Источник фактического положения — настоящая Boat.
+         * Это позволяет Minecraft вести физическую Entity, а кораблю
+         * следовать за ней.
+         */
+        anchorCenter = rootEntity.getLocation().clone();
+
         updatePhysics();
 
-        float nextYaw = shipYaw + currentTurn;
+        float nextYaw = norm(shipYaw + currentTurn);
         boolean rotated = Math.abs(currentTurn) > 0.00001f;
         boolean moved = false;
 
+        /*
+         * Сначала проверяем поворот всей формы корабля.
+         * Угол collision-модели задается относительно исходного положения.
+         */
         if (rotated) {
-            nextYaw = norm(nextYaw);
-
-            /*
-             * При невозможности поворота не обнуляем управление навсегда.
-             * Угловая скорость мягко гасится и на следующем тике снова
-             * вычисляется из input.
-             */
-            if (canTransform(anchorCenter, nextYaw)) {
+            if (!collisionModel.collides(
+                    anchorCenter.getWorld(),
+                    anchorCenter,
+                    nextYaw - initialYaw
+            )) {
                 shipYaw = nextYaw;
                 moved = true;
             } else {
@@ -379,30 +392,38 @@ public class ActiveShip {
             }
         }
 
-        if (Math.abs(currentSpeed) > 0.0001) {
-            Vector direction = yawDir(shipYaw);
-            Location next = anchorCenter.clone().add(direction.multiply(currentSpeed));
+        Vector desiredVelocity = yawDir(shipYaw).multiply(currentSpeed);
 
-            if (canTransform(next, shipYaw)) {
-                anchorCenter = next;
-                moved = true;
+        /*
+         * Проверяем следующий шаг всей формы корабля ДО установки velocity.
+         * Маленький hitbox Boat здесь вообще не определяет границу корабля.
+         */
+        if (Math.abs(currentSpeed) > 0.0001) {
+            Location predicted = anchorCenter.clone().add(desiredVelocity);
+
+            if (collisionModel.collides(
+                    predicted.getWorld(),
+                    predicted,
+                    shipYaw - initialYaw
+            )) {
+                currentSpeed *= 0.35;
+                desiredVelocity = new Vector();
             } else {
-                /*
-                 * Не делаем жесткий обрыв "скорость = 0":
-                 * корабль тормозит плавно, чтобы не было рывка у корпуса.
-                 */
-                currentSpeed *= 0.25;
+                moved = true;
             }
         }
 
         /*
-         * Даже когда ship почти остановился, один раз поддерживаем точное
-         * положение игрока на штурвале. Это предотвращает накопление
-         * микросмещения пассажира.
+         * Boat остается настоящей физической Entity.
+         * Управление курсом выполняется нашим shipYaw, а не взглядом игрока.
          */
+        rootEntity.setRotation(shipYaw, 0.0f);
+        rootEntity.setVelocity(desiredVelocity);
+
         /*
-         * Штурвал поддерживается каждый тик, даже в покое.
-         * Это не даёт игроку накапливать микросмещение от физики/плагинов.
+         * После того как Boat обновлена, следующая итерация прочитает ее
+         * фактическую серверную позицию. Это не дает модели постепенно
+         * расходиться с carrier.
          */
         updateSeat();
 
@@ -411,17 +432,11 @@ public class ActiveShip {
         }
 
         /*
-         * Не отправляем новую Transformation каждый тик.
-         * Два серверных тика физики складываются в один клиентский
-         * интерполируемый сегмент. При этом серверная физика остается 20 TPS.
-         */
-        /*
-         * При teleportDuration=1 Display получает новое серверное положение
-         * каждый тик и ровно один тик на его клиентскую интерполяцию.
+         * Визуальный корпус получает реальную позицию carrier каждый тик.
+         * Все уже настроенные Display-параметры остаются без изменений.
          */
         renderTickCounter = 0;
         updateDisplays(rotated);
-
     }
 
     private void updatePhysics() {
