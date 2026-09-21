@@ -87,6 +87,12 @@ public class ActiveShip {
     private float pilotYaw;
     private float pilotPitch;
 
+    private static final double CARRIER_MAX_FORWARD = 0.38;
+    private static final double CARRIER_MAX_BACKWARD = 0.16;
+    private static final double CARRIER_ACCELERATION = 0.12;
+    private static final double CARRIER_BRAKE = 0.22;
+    private static final float CARRIER_TURN_SPEED = 1.6f;
+
     private Location lastCarrierLocation;
 
     /**
@@ -260,7 +266,15 @@ public class ActiveShip {
          * не гарантирует полное скрытие. Paper предоставляет visibility API
          * именно для таких случаев.
          */
-        carrier.setInvisible(true);
+        /*
+         * Boat должна оставаться отслеживаемой клиентом-пилотом, иначе
+         * клиент перестает воспринимать player как rider transport.
+         *
+         * Полное визуальное скрытие Boat не решается setVisibleByDefault(false):
+         * это удаляет entity из tracking. Отдельное скрытие модели будет
+         * следующим визуальным слоем.
+         */
+        carrier.setInvisible(false);
         carrier.setInvulnerable(true);
         carrier.setPersistent(false);
         carrier.setSilent(true);
@@ -422,71 +436,69 @@ public class ActiveShip {
      * преобразуется в плавную скорость Boat.
      */
     private void controlCarrier() {
-        Vector velocity = carrier.getVelocity();
+        Vector currentVelocity = carrier.getVelocity();
 
         double targetSpeed = 0.0;
 
         if (kForward && !kBackward) {
-            targetSpeed = 0.38;
+            targetSpeed = CARRIER_MAX_FORWARD;
         } else if (kBackward && !kForward) {
-            targetSpeed = -0.16;
+            targetSpeed = -CARRIER_MAX_BACKWARD;
         }
 
-        double yawRadians = Math.toRadians(shipYaw);
+        float currentYaw = carrier.getYaw();
+        double radians = Math.toRadians(currentYaw);
 
         Vector direction = new Vector(
-                -Math.sin(yawRadians),
+                -Math.sin(radians),
                 0.0,
-                Math.cos(yawRadians)
+                Math.cos(radians)
         );
 
-        double targetX = direction.getX() * targetSpeed;
-        double targetZ = direction.getZ() * targetSpeed;
+        double targetX =
+                direction.getX() * targetSpeed;
 
-        double response = targetSpeed == 0.0 ? 0.18 : 0.10;
+        double targetZ =
+                direction.getZ() * targetSpeed;
+
+        double response =
+                targetSpeed == 0.0
+                        ? CARRIER_BRAKE
+                        : CARRIER_ACCELERATION;
 
         double nextX =
-                velocity.getX()
-                        + (targetX - velocity.getX()) * response;
+                currentVelocity.getX()
+                        + (targetX - currentVelocity.getX())
+                        * response;
 
         double nextZ =
-                velocity.getZ()
-                        + (targetZ - velocity.getZ()) * response;
+                currentVelocity.getZ()
+                        + (targetZ - currentVelocity.getZ())
+                        * response;
 
         /*
-         * Сохраняем Y, чтобы Boat продолжала использовать собственную
-         * водную физику/плавучесть.
+         * Boat сохраняет свою вертикальную физику на воде.
          */
         carrier.setVelocity(
                 new Vector(
                         nextX,
-                        velocity.getY(),
+                        currentVelocity.getY(),
                         nextZ
                 )
         );
 
-        float turnTarget = 0.0f;
+        if (kLeft ^ kRight) {
+            float directionSign = kLeft ? -1.0f : 1.0f;
 
-        if (kLeft && !kRight) {
-            turnTarget = -2.0f;
-        } else if (kRight && !kLeft) {
-            turnTarget = 2.0f;
-        }
-
-        /*
-         * Плавный руль без резкого изменения yaw.
-         */
-        float desiredTurn = turnTarget;
-
-        if (Math.abs(desiredTurn) > 0.001f) {
-            float newYaw =
+            float nextYaw =
                     norm(
-                            shipYaw
-                                    + desiredTurn
+                            currentYaw
+                                    + directionSign
+                                    * CARRIER_TURN_SPEED
                     );
 
             carrier.setRotation(
-                    newYaw,
+                    nextYaw,
                     0.0f
             );
         }
