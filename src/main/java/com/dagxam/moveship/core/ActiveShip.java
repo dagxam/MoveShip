@@ -557,6 +557,26 @@ public class ActiveShip {
         }
 
         pilot.setFallDistance(0.0f);
+
+        /*
+         * Технический root всегда следует за кораблём.
+         * Игрок на нём не сидит, поэтому root никак не ограничивает взгляд.
+         * Он нужен только как живой технический якорь.
+         */
+        Location rootLocation = rootEntity.getLocation();
+
+        if (Math.abs(rootLocation.getX() - seatX) > 0.01
+                || Math.abs(rootLocation.getY() - seatY) > 0.01
+                || Math.abs(rootLocation.getZ() - seatZ) > 0.01) {
+
+            rootLocation.setX(seatX);
+            rootLocation.setY(seatY);
+            rootLocation.setZ(seatZ);
+            rootLocation.setYaw(0.0f);
+            rootLocation.setPitch(0.0f);
+
+            rootEntity.teleport(rootLocation);
+        }
     }
 
     /**
