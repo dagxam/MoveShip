@@ -4,6 +4,8 @@ import org.bukkit.Axis;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.entity.Boat;
+import org.bukkit.entity.EntityType;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
@@ -14,7 +16,8 @@ import org.bukkit.block.data.MultipleFacing;
 import org.bukkit.block.data.Orientable;
 import org.bukkit.block.data.Rotatable;
 import org.bukkit.block.data.Waterlogged;
-import org.bukkit.entity.ArmorStand;
+import org.bukkit.util.BoundingBox;
+import org.bukkit.util.VoxelShape;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -42,12 +45,13 @@ public class ActiveShip {
      * Это важно: поворот корпуса больше не может менять локальную посадку игрока
      * через цепочку пассажиров.
      */
-    private final ArmorStand rootEntity;
+    private final Boat rootEntity;
 
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
     private final List<Location> displayLocations = new ArrayList<>();
     private final List<Matrix4f> displayMatrices = new ArrayList<>();
+    private final ShipCollisionModel collisionModel;
 
     /*
      * Скорость в блоках за тик.
@@ -208,16 +212,34 @@ public class ActiveShip {
             BlockData blockData = block.getBlockData().clone();
             BlockState snapshot = block.getState(true);
 
+            List<BoundingBox> collisionBoxes =
+                    captureLocalCollisionBoxes(
+                            blockData,
+                            block.getLocation(),
+                            anchorCenter
+                    );
+
             originalBlocks.add(
                     new ShipBlockData(
                             localX,
                             localY,
                             localZ,
                             blockData,
-                            snapshot
+                            snapshot,
+                            collisionBoxes
                     )
             );
         }
+
+        /*
+         * Collision-модель создается один раз при активации.
+         * Во время движения Shape блоков заново не вычисляются.
+         */
+        this.collisionModel = new ShipCollisionModel(
+                originalBlocks.stream()
+                        .flatMap(data -> data.getCollisionBoxes().stream())
+                        .toList()
+        );
 
         /*
          * После snapshot мир очищается.
