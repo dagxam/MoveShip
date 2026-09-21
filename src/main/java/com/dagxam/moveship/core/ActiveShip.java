@@ -255,9 +255,9 @@ public class ActiveShip {
                     entity -> {
                         entity.setBlock(block.getBlockData().clone());
                         entity.setPersistent(false);
-                        entity.setTeleportDuration(2);
+                        entity.setTeleportDuration(0);
                         entity.setInterpolationDelay(0);
-                        entity.setInterpolationDuration(1);
+                        entity.setInterpolationDuration(3);
                     }
             );
 
@@ -515,7 +515,7 @@ public class ActiveShip {
             rootEntity.setVelocity(new Vector(dx, dy, dz));
         }
 
-        rootEntity.setRotation(0.0f, 0.0f);
+        rootEntity.setRotation(pilotYaw, 0.0f);
         preservePilotRotation(pilotYaw, pilotPitch);
 
         /*
@@ -526,11 +526,18 @@ public class ActiveShip {
         pilot.setVelocity(new Vector());
     }
 
+    /**
+     * Обновляет визуальное состояние корабля только через Display
+     * Transformation. Сам entity больше не телепортируется каждый тик.
+     *
+     * Это особенно важно для движения вперед/назад: клиент получает
+     * последовательность гладких трансформаций вместо цепочки телепортов,
+     * которые конкурируют между собой за интерполяцию.
+     */
     private void updateDisplays(boolean rotated) {
         double delta = Math.toRadians(shipYaw - initialYaw);
         double cos = Math.cos(delta);
         double sin = Math.sin(delta);
-
         float rotation = (float) -delta;
 
         for (int i = 0; i < originalBlocks.size(); i++) {
@@ -541,6 +548,7 @@ public class ActiveShip {
             }
 
             ShipBlockData block = originalBlocks.get(i);
+            Location initial = displayLocations.get(i);
 
             double centerX =
                     anchorCenter.getX()
@@ -557,30 +565,33 @@ public class ActiveShip {
                             + block.getLocalX() * sin
                             + block.getLocalZ() * cos;
 
-            Location location = displayLocations.get(i);
+            double currentCornerX = centerX - 0.5;
+            double currentCornerY = centerY - 0.5;
+            double currentCornerZ = centerZ - 0.5;
+
+            double tx = currentCornerX - initial.getX();
+            double ty = currentCornerY - initial.getY();
+            double tz = currentCornerZ - initial.getZ();
+
+            Matrix4f matrix = displayMatrices.get(i);
 
             /*
-             * BlockDisplay location — нижний/левый/задний угол блока,
-             * поэтому от центра отнимаем 0.5 по каждой оси.
+             * Entity location остается неизменным.
+             * Matrix переводит блок на новое мировое положение и вращает его
+             * вокруг собственного центра.
              */
-            location.setX(centerX - 0.5);
-            location.setY(centerY - 0.5);
-            location.setZ(centerZ - 0.5);
+            matrix.identity()
+                    .translate(
+                            (float) (tx + 0.5),
+                            (float) (ty + 0.5),
+                            (float) (tz + 0.5)
+                    )
+                    .rotateY(rotation)
+                    .translate(-0.5f, -0.5f, -0.5f);
 
-            display.teleport(location);
-
-            if (rotated) {
-                Matrix4f matrix = displayMatrices.get(i);
-
-                matrix.identity()
-                        .translate(0.5f, 0.5f, 0.5f)
-                        .rotateY(rotation)
-                        .translate(-0.5f, -0.5f, -0.5f);
-
-                display.setInterpolationDelay(0);
-                display.setInterpolationDuration(2);
-                display.setTransformationMatrix(matrix);
-            }
+            display.setInterpolationDelay(0);
+            display.setInterpolationDuration(3);
+            display.setTransformationMatrix(matrix);
         }
     }
 
