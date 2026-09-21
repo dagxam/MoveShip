@@ -79,6 +79,14 @@ public class ActiveShip {
     private float shipYaw;
     private final float initialYaw;
 
+    private boolean kForward;
+    private boolean kBackward;
+    private boolean kLeft;
+    private boolean kRight;
+
+    private float pilotYaw;
+    private float pilotPitch;
+
     private Location lastCarrierLocation;
 
     /**
@@ -145,6 +153,8 @@ public class ActiveShip {
 
         this.shipYaw = norm(pilotStart.getYaw());
         this.initialYaw = this.shipYaw;
+        this.pilotYaw = pilotStart.getYaw();
+        this.pilotPitch = pilotStart.getPitch();
 
         /*
          * После появления Boat она будет двигать весь корабль вместе с собой.
@@ -196,7 +206,8 @@ public class ActiveShip {
          */
         this.collisionModel = new ShipCollision(
                 originalBlocks,
-                anchorCenter
+                anchorCenter,
+                initialYaw
         );
 
         /*
@@ -250,7 +261,6 @@ public class ActiveShip {
          * именно для таких случаев.
          */
         carrier.setInvisible(true);
-        carrier.setVisibleByDefault(false);
         carrier.setInvulnerable(true);
         carrier.setPersistent(false);
         carrier.setSilent(true);
@@ -346,7 +356,19 @@ public class ActiveShip {
             boolean left,
             boolean right
     ) {
-        // Управление теперь выполняет сама Boat.
+        this.kForward = forward;
+        this.kBackward = backward;
+        this.kLeft = left;
+        this.kRight = right;
+    }
+
+    /**
+     * Запоминает направление взгляда игрока.
+     * Положение не меняется — курс Boat здесь не участвует.
+     */
+    public void setPilotView(float yaw, float pitch) {
+        this.pilotYaw = yaw;
+        this.pilotPitch = pitch;
     }
 
     private void tick() {
@@ -356,13 +378,30 @@ public class ActiveShip {
         }
 
         if (pilot.getVehicle() != carrier) {
-            restoreBlocks();
-            return;
+            /*
+             * Клиент мог потерять passenger-состояние после visibility/packet
+             * рассинхронизации. Восстанавливаем посадку вместо мгновенного
+             * уничтожения активного корабля.
+             */
+            if (!carrier.getPassengers().contains(pilot)) {
+                carrier.addPassenger(pilot);
+            }
+
+            if (pilot.getVehicle() != carrier) {
+                return;
+            }
         }
 
         if (correctingCarrier) {
             return;
         }
+
+        controlCarrier();
+
+        pilot.setRotation(
+                pilotYaw,
+                pilotPitch
+        );
 
         Location current = carrier.getLocation();
 
@@ -370,6 +409,85 @@ public class ActiveShip {
             processCarrierMove(
                     lastCarrierLocation,
                     current
+            );
+        }
+    }
+
+    /**
+     * Серверное управление Boat как fallback/authoritative controller.
+     *
+     * Vanilla Boat должна получать input от клиента сама, но для нашего
+     * скрытого carrier это ненадежно: кроме passenger-обмена нам нужен
+     * гарантированный серверный ход. Поэтому input из PlayerInputEvent
+     * преобразуется в плавную скорость Boat.
+     */
+    private void controlCarrier() {
+        Vector velocity = carrier.getVelocity();
+
+        double targetSpeed = 0.0;
+
+        if (kForward && !kBackward) {
+            targetSpeed = 0.38;
+        } else if (kBackward && !kForward) {
+            targetSpeed = -0.16;
+        }
+
+        double yawRadians = Math.toRadians(shipYaw);
+
+        Vector direction = new Vector(
+                -Math.sin(yawRadians),
+                0.0,
+                Math.cos(yawRadians)
+        );
+
+        double targetX = direction.getX() * targetSpeed;
+        double targetZ = direction.getZ() * targetSpeed;
+
+        double response = targetSpeed == 0.0 ? 0.18 : 0.10;
+
+        double nextX =
+                velocity.getX()
+                        + (targetX - velocity.getX()) * response;
+
+        double nextZ =
+                velocity.getZ()
+                        + (targetZ - velocity.getZ()) * response;
+
+        /*
+         * Сохраняем Y, чтобы Boat продолжала использовать собственную
+         * водную физику/плавучесть.
+         */
+        carrier.setVelocity(
+                new Vector(
+                        nextX,
+                        velocity.getY(),
+                        nextZ
+                )
+        );
+
+        float turnTarget = 0.0f;
+
+        if (kLeft && !kRight) {
+            turnTarget = -2.0f;
+        } else if (kRight && !kLeft) {
+            turnTarget = 2.0f;
+        }
+
+        /*
+         * Плавный руль без резкого изменения yaw.
+         */
+        float desiredTurn = turnTarget;
+
+        if (Math.abs(desiredTurn) > 0.001f) {
+            float newYaw =
+                    norm(
+                            shipYaw
+                                    + desiredTurn
+                    );
+
+            carrier.setRotation(
+                    newYaw,
+                    0.0f
             );
         }
     }
