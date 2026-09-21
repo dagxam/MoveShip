@@ -3,7 +3,6 @@ package com.dagxam.moveship.core;
 import com.dagxam.moveship.MoveShipPlugin;
 import org.bukkit.Axis;
 import org.bukkit.Bukkit;
-import org.bukkit.entity.EntityType;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -15,14 +14,14 @@ import org.bukkit.block.data.MultipleFacing;
 import org.bukkit.block.data.Orientable;
 import org.bukkit.block.data.Rotatable;
 import org.bukkit.block.data.Waterlogged;
-import org.bukkit.entity.Boat;
+import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.BlockDisplay;
-import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 import org.joml.Matrix4f;
+import org.joml.Quaternionf;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -32,81 +31,103 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Активный корабль.
+ * Активный корабль MoveShip.
  *
- * После активации реальные блоки временно снимаются из мира и отображаются
- * через BlockDisplay, а скрытая стандартная Boat используется как настоящий
- * Minecraft Vehicle для движения и пассажира.
+ * Архитектура основана на проверенной схеме современных ship-плагинов:
  *
- * Серверная ShipCollision отдельно описывает реальную форму построенного
- * корабля и не зависит от маленькой штатной коллизии Boat.
+ * 1. Реальные блоки временно снимаются из мира после полного snapshot.
+ * 2. Невидимый ArmorStand является только якорем штурвала и пассажира.
+ * 3. Все BlockDisplay имеют одну общую мировую позицию — позицию якоря.
+ * 4. Фактическое положение каждого блока внутри корабля задается
+ *    Transformation Matrix.
+ * 5. Поворот корабля хранится отдельно во внутреннем float shipYaw.
+ *
+ * Важно: yaw ArmorStand после активации НЕ изменяется. Это предотвращает
+ * вмешательство entity tracker в взгляд игрока. Курс корабля существует
+ * только внутри этой модели.
  */
 public class ActiveShip {
+
+    private static final double HELM_VERTICAL_OFFSET = 0.45;
+
+    /*
+     * Профиль движения.
+     *
+     * Скорости близки к современной лодочной/корабельной модели, но
+     * разгон и торможение сглажены, чтобы W/S не давали резкий скачок.
+     */
+    private static final double MAX_FORWARD_SPEED = 0.25;
+    private static final double MAX_REVERSE_SPEED = 0.125;
+
+    private static final double ACCELERATION_RESPONSE = 0.12;
+    private static final double BRAKE_RESPONSE = 0.20;
+
+    /*
+     * Внутренняя угловая скорость.
+     * Она не записывается в yaw ArmorStand.
+     */
+    private static final float MAX_TURN_SPEED = 2.0f;
+    private static final float TURN_ACCELERATION_RESPONSE = 0.14f;
+    private static final float TURN_BRAKE_RESPONSE = 0.20f;
+
+    /*
+     * SimpleShips использует 3 тика для teleport interpolation Display.
+     * Это заметно мягче одиночной телепортации каждый тик.
+     */
+    private static final int DISPLAY_TELEPORT_DURATION = 3;
 
     private final Player pilot;
     private final MoveShipPlugin plugin;
 
     /**
-     * Настоящий Minecraft Vehicle.
-     * Игрок сидит непосредственно в Boat.
+     * Настоящий vehicle/seat игрока.
      */
-    private final Boat carrier;
+    private final ArmorStand helmAnchor;
 
     /**
-     * Точная collision-модель исходного корабля.
+     * Collision построенного корабля, полностью независимая от Entity hitbox.
      */
     private final ShipCollision collisionModel;
 
-    private final List<ShipBlockData> originalBlocks = new ArrayList<>();
-    private final List<BlockDisplay> displayEntities = new ArrayList<>();
-    private final List<Location> displayLocations = new ArrayList<>();
-    private final List<Matrix4f> displayMatrices = new ArrayList<>();
+    private final List<ShipBlockData> originalBlocks =
+            new ArrayList<>();
+
+    private final List<BlockDisplay> displayEntities =
+            new ArrayList<>();
 
     /**
-     * Геометрический anchor корабля остается локально привязанным
-     * к точке Boat, а не к мировым координатам старта.
+     * Матрица на каждый Display. Один объект переиспользуется.
      */
-    private final double carrierLocalAnchorX;
-    private final double carrierLocalAnchorY;
-    private final double carrierLocalAnchorZ;
+    private final List<Matrix4f> displayMatrices =
+            new ArrayList<>();
 
+    /**
+     * Центр исходного anchor-блока корабля.
+     *
+     * Эта точка является физическим центром вращения корабля.
+     */
     private Location anchorCenter;
 
     /**
-     * Курс корабля берется от Boat.
-     * Мышь игрока здесь вообще не используется.
+     * Реальный внутренний курс корабля.
+     * ArmorStand yaw намеренно не синхронизируется с этим значением.
      */
     private float shipYaw;
+
     private final float initialYaw;
 
-    private boolean kForward;
-    private boolean kBackward;
-    private boolean kLeft;
-    private boolean kRight;
+    private double currentSpeed;
+    private float currentTurn;
 
-    private float pilotYaw;
-    private float pilotPitch;
-
-    private static final double CARRIER_MAX_FORWARD = 0.38;
-    private static final double CARRIER_MAX_BACKWARD = 0.16;
-    private static final double CARRIER_ACCELERATION = 0.12;
-    private static final double CARRIER_BRAKE = 0.22;
-    private static final float CARRIER_TURN_SPEED = 1.6f;
-
-    private Location lastCarrierLocation;
-
-    /**
-     * Защищает от повторной обработки VehicleMoveEvent после corrective teleport.
-     */
-    private boolean correctingCarrier;
+    private boolean forwardPressed;
+    private boolean backwardPressed;
+    private boolean leftPressed;
+    private boolean rightPressed;
 
     private BukkitTask task;
 
-    /**
-     * Координаты подводной части корпуса, которые должны оставаться водой
-     * после удаления физических блоков и после прохождения корабля.
-     */
-    private final Set<BP> submergedWake = new HashSet<>();
+    private final Set<BP> submergedWake =
+            new HashSet<>();
 
     private record BP(int x, int y, int z) {
     }
@@ -121,8 +142,8 @@ public class ActiveShip {
             BlockFace.SOUTH_EAST,
             BlockFace.SOUTH_SOUTH_EAST,
             BlockFace.SOUTH,
+            BlockFace.SOUTH_SOUTH_EAST,
             BlockFace.SOUTH_SOUTH_WEST,
-            BlockFace.SOUTH_WEST,
             BlockFace.WEST_SOUTH_WEST,
             BlockFace.WEST,
             BlockFace.WEST_NORTH_WEST,
@@ -136,65 +157,89 @@ public class ActiveShip {
             Player pilot
     ) {
         if (blocks == null || blocks.isEmpty()) {
-            throw new IllegalArgumentException("Корабль не содержит блоков");
+            throw new IllegalArgumentException(
+                    "Корабль не содержит блоков"
+            );
         }
 
-        if (anchorLocation == null || anchorLocation.getWorld() == null) {
-            throw new IllegalArgumentException("У корабля отсутствует мир");
+        if (anchorLocation == null
+                || anchorLocation.getWorld() == null) {
+            throw new IllegalArgumentException(
+                    "У корабля отсутствует мир"
+            );
         }
 
         if (pilot == null || !pilot.isOnline()) {
-            throw new IllegalArgumentException("Пилот недоступен");
+            throw new IllegalArgumentException(
+                    "Пилот недоступен"
+            );
         }
 
         this.pilot = pilot;
-        this.plugin = JavaPlugin.getPlugin(MoveShipPlugin.class);
+        this.plugin =
+                JavaPlugin.getPlugin(
+                        MoveShipPlugin.class
+                );
 
+        /*
+         * Anchor блока управления:
+         *
+         * x/z = центр блока,
+         * y   = центр блока + 0.45 — это точка посадки штурвала.
+         */
         this.anchorCenter = anchorLocation
                 .getBlock()
                 .getLocation()
                 .add(0.5, 0.0, 0.5);
 
-        Location pilotStart = pilot.getLocation().clone();
+        Location helmLocation =
+                anchorCenter.clone();
 
-        this.shipYaw = norm(pilotStart.getYaw());
+        helmLocation.add(
+                0.0,
+                HELM_VERTICAL_OFFSET,
+                0.0
+        );
+
+        float pilotYaw =
+                pilot.getLocation().getYaw();
+
+        this.shipYaw = norm(pilotYaw);
         this.initialYaw = this.shipYaw;
-        this.pilotYaw = pilotStart.getYaw();
-        this.pilotPitch = pilotStart.getPitch();
 
         /*
-         * После появления Boat она будет двигать весь корабль вместе с собой.
-         * Поэтому сохраняем положение исходного anchor относительно Boat.
-         */
-        this.carrierLocalAnchorX =
-                anchorCenter.getX() - pilotStart.getX();
-        this.carrierLocalAnchorY =
-                anchorCenter.getY() - pilotStart.getY();
-        this.carrierLocalAnchorZ =
-                anchorCenter.getZ() - pilotStart.getZ();
-
-        /*
-         * Вода определяется до удаления исходных блоков.
+         * Вода фиксируется до удаления реальных блоков.
          */
         captureSubmergedWake(blocks);
 
         /*
-         * Сначала полный snapshot ВСЕХ блоков.
-         * Только после этого мир очищается.
+         * ПОЛНЫЙ snapshot до изменения мира.
          */
         for (Block block : blocks) {
-            if (block.getWorld() != anchorLocation.getWorld()) {
+            if (block.getWorld()
+                    != anchorLocation.getWorld()) {
                 throw new IllegalArgumentException(
                         "Все блоки корабля должны находиться в одном мире"
                 );
             }
 
-            int localX = block.getX() - anchorLocation.getBlockX();
-            int localY = block.getY() - anchorLocation.getBlockY();
-            int localZ = block.getZ() - anchorLocation.getBlockZ();
+            int localX =
+                    block.getX()
+                            - anchorLocation.getBlockX();
 
-            BlockData blockData = block.getBlockData().clone();
-            BlockState snapshot = block.getState(true);
+            int localY =
+                    block.getY()
+                            - anchorLocation.getBlockY();
+
+            int localZ =
+                    block.getZ()
+                            - anchorLocation.getBlockZ();
+
+            BlockData blockData =
+                    block.getBlockData().clone();
+
+            BlockState snapshot =
+                    block.getState(true);
 
             originalBlocks.add(
                     new ShipBlockData(
@@ -208,160 +253,143 @@ public class ActiveShip {
         }
 
         /*
-         * ShipCollision строится пока реальные блоки еще доступны.
+         * Collision строится по сохраненному BlockData пока физические
+         * блоки еще существуют/доступна исходная геометрия.
          */
-        this.collisionModel = new ShipCollision(
-                originalBlocks,
-                anchorCenter,
-                initialYaw
-        );
+        this.collisionModel =
+                new ShipCollision(
+                        originalBlocks,
+                        anchorCenter,
+                        initialYaw
+                );
 
         /*
-         * Удаляем физические блоки мира.
-         * Состояние уже сохранено выше.
+         * Теперь реальные блоки убираются из мира.
          */
         for (Block block : blocks) {
-            block.setType(Material.AIR, false);
+            if (block.getState() instanceof
+                    org.bukkit.block.Container container) {
+                /*
+                 * Состояние уже сохранено. Очищаем world inventory, чтобы
+                 * одновременно не существовало двух копий содержимого.
+                 */
+                container.getInventory().clear();
+            }
+
+            block.setType(
+                    Material.AIR,
+                    false
+            );
         }
 
-        /*
-         * Сразу закрываем подводную часть водой.
-         */
         fillInitialWater();
 
         /*
-         * Создаем скрытую стандартную OakBoat.
+         * Невидимый ArmorStand — тот же базовый подход, который использует
+         * SimpleShips. В отличие от Boat его модель не появляется в мире.
          *
-         * Именно Boat теперь является Vehicle и получает штатную
-         * обработку пассажира/движения Minecraft.
+         * marker=false сохраняет нормальную пассажирскую высоту.
          */
-        Entity entity = anchorLocation.getWorld().spawnEntity(
-                pilotStart,
-                EntityType.OAK_BOAT
-        );
+        this.helmAnchor =
+                anchorLocation.getWorld().spawn(
+                        helmLocation,
+                        ArmorStand.class,
+                        stand -> {
+                            stand.setSmall(true);
+                            stand.setInvisible(true);
+                            stand.setMarker(false);
+                            stand.setGravity(false);
+                            stand.setInvulnerable(true);
+                            stand.setPersistent(false);
+                            stand.setSilent(true);
 
-        if (!(entity instanceof Boat boat)) {
-            entity.remove();
+                            /*
+                             * Курс Entity замораживаем на исходном yaw.
+                             * Внутренний shipYaw будет меняться отдельно.
+                             */
+                            stand.setRotation(
+                                    this.initialYaw,
+                                    0.0f
+                            );
+                        }
+                );
+
+        /*
+         * Игрок является пассажиром собственного невидимого штурвала.
+         * Мы не изменяем его yaw/pitch во время движения.
+         */
+        if (!helmAnchor.addPassenger(pilot)) {
+            helmAnchor.remove();
+
             throw new IllegalStateException(
-                    "Paper не смог создать OakBoat для корабля"
+                    "Не удалось посадить игрока на штурвал"
             );
         }
 
-        this.carrier = boat;
-
         /*
-         * Boat остается настоящим серверным entity, но ее собственную
-         * модель не показываем как часть корабля.
+         * Все Display создаются в ОДНОЙ мировой позиции:
+         * точке helmAnchor.
          *
-         * setInvisible для не-Living Entity в Minecraft формально имеет
-         * неопределенное визуальное поведение, поэтому additionally:
-         * - убираем стандартный звук;
-         * - не сохраняем Entity в мир.
-         *
-         * Если клиент все равно рисует тень/часть модели, это будет
-         * отдельным визуальным слоем, который можно скрыть персонально.
-         */
-        /*
-         * ВАЖНО: Boat — non-living entity, поэтому setInvisible() для неё
-         * не гарантирует полное скрытие. Paper предоставляет visibility API
-         * именно для таких случаев.
-         */
-        /*
-         * setInvisible() для Boat не гарантирует скрытие модели в Minecraft.
-         * Поэтому carrier сначала остается обычной отслеживаемой Entity,
-         * а после установки passenger скрывается персонально у наблюдателей
-         * через Player#hideEntity().
-         */
-        carrier.setInvisible(false);
-        carrier.setInvulnerable(true);
-        carrier.setPersistent(false);
-        carrier.setSilent(true);
-        carrier.setPortalCooldown(20);
-        carrier.setRotation(shipYaw, 0.0f);
-
-        /*
-         * На случай игроков, которые уже начали tracking entity до смены
-         * visibility. Новые игроки автоматически не увидят carrier из-за
-         * setVisibleByDefault(false).
-         */
-        for (Player viewer : anchorLocation.getWorld().getPlayers()) {
-            viewer.hideEntity(plugin, carrier);
-        }
-
-        /*
-         * Игрок становится настоящим пассажиром Boat.
-         */
-        if (!carrier.addPassenger(pilot)) {
-            carrier.remove();
-            throw new IllegalStateException(
-                    "Не удалось посадить игрока в Boat"
-            );
-        }
-
-        this.lastCarrierLocation = carrier.getLocation().clone();
-
-
-        /*
-         * Визуальный корпус.
-         *
-         * Display перемещается штатным teleport interpolation.
-         * Transformation используется только для ориентации блока при повороте.
+         * Их реальные координаты задаются Transformation.
          */
         for (ShipBlockData block : originalBlocks) {
-            Location initialLocation =
-                    blockWorldLocation(
+            Matrix4f matrix =
+                    createDisplayTransform(
                             block,
-                            anchorCenter,
                             0.0f
                     );
 
-            Matrix4f matrix = createBlockMatrix(0.0f);
+            BlockDisplay display =
+                    anchorLocation.getWorld().spawn(
+                            helmLocation,
+                            BlockDisplay.class,
+                            entity -> {
+                                entity.setBlock(
+                                        block.getBlockData().clone()
+                                );
 
-            BlockDisplay display = anchorLocation.getWorld().spawn(
-                    initialLocation,
-                    BlockDisplay.class,
-                    d -> {
-                        d.setBlock(block.getBlockData().clone());
-                        d.setPersistent(false);
-                        d.setTeleportDuration(1);
+                                entity.setPersistent(false);
+                                entity.setGravity(false);
 
-                        /*
-                         * Не режем большой корабль client-side culling.
-                         */
-                        d.setDisplayWidth(0.0f);
-                        d.setDisplayHeight(0.0f);
-                        d.setViewRange(64.0f);
+                                entity.setTeleportDuration(
+                                        DISPLAY_TELEPORT_DURATION
+                                );
 
-                        d.setInterpolationDelay(0);
-                        d.setInterpolationDuration(1);
-                    }
-            );
+                                entity.setInterpolationDelay(-1);
+                                entity.setInterpolationDuration(0);
+
+                                /*
+                                 * Большой корабль не должен исчезать при
+                                 * перемещении относительно entity origin.
+                                 */
+                                entity.setDisplayWidth(0.0f);
+                                entity.setDisplayHeight(0.0f);
+                                entity.setViewRange(64.0f);
+                            }
+                    );
 
             displayEntities.add(display);
-            displayLocations.add(initialLocation);
             displayMatrices.add(matrix);
 
-            display.setTransformationMatrix(matrix);
+            display.setTransformationMatrix(
+                    matrix
+            );
         }
 
         /*
-         * Watchdog:
-         * VehicleMoveEvent является основным источником движения.
-         * Этот тик отвечает только за жизненный цикл и за случай,
-         * когда другое событие/плагин переместило Boat без ожидаемого callback.
+         * Один server task на корабль.
          */
-        this.task = Bukkit.getScheduler().runTaskTimer(
-                plugin,
-                this::tick,
-                1L,
-                1L
-        );
+        this.task =
+                Bukkit.getScheduler().runTaskTimer(
+                        plugin,
+                        this::tick,
+                        1L,
+                        1L
+                );
     }
 
     /**
-     * Старый setter оставлен для совместимости listener-слоя.
-     *
-     * Теперь W/S/A/D обрабатываются самой стандартной Boat Minecraft.
+     * Получение input от Paper PlayerInputEvent.
      */
     public void setInput(
             boolean forward,
@@ -369,357 +397,409 @@ public class ActiveShip {
             boolean left,
             boolean right
     ) {
-        this.kForward = forward;
-        this.kBackward = backward;
-        this.kLeft = left;
-        this.kRight = right;
-    }
-
-    /**
-     * Запоминает направление взгляда игрока.
-     * Положение не меняется — курс Boat здесь не участвует.
-     */
-    public void setPilotView(float yaw, float pitch) {
-        this.pilotYaw = yaw;
-        this.pilotPitch = pitch;
+        this.forwardPressed = forward;
+        this.backwardPressed = backward;
+        this.leftPressed = left;
+        this.rightPressed = right;
     }
 
     private void tick() {
-        if (!pilot.isOnline() || !carrier.isValid()) {
+        if (!pilot.isOnline()
+                || !helmAnchor.isValid()) {
             restoreBlocks();
             return;
         }
 
-        if (pilot.getVehicle() != carrier) {
-            /*
-             * Клиент мог потерять passenger-состояние после visibility/packet
-             * рассинхронизации. Восстанавливаем посадку вместо мгновенного
-             * уничтожения активного корабля.
-             */
-            if (!carrier.getPassengers().contains(pilot)) {
-                carrier.addPassenger(pilot);
-            }
-
-            if (pilot.getVehicle() != carrier) {
-                return;
-            }
-        }
-
-        if (correctingCarrier) {
+        /*
+         * Должен оставаться пассажиром.
+         * Если другой механизм его снял — считаем это выходом со штурвала.
+         */
+        if (pilot.getVehicle() != helmAnchor) {
+            restoreBlocks();
             return;
         }
 
-        controlCarrier();
+        updatePhysics();
 
-        pilot.setRotation(
-                pilotYaw,
-                pilotPitch
-        );
+        Location oldCenter =
+                anchorCenter.clone();
 
-        Location current = carrier.getLocation();
+        float oldYaw =
+                shipYaw;
 
-        if (!sameTransform(lastCarrierLocation, current)) {
-            processCarrierMove(
-                    lastCarrierLocation,
-                    current
-            );
-        }
-    }
-
-    /**
-     * Серверное управление Boat как fallback/authoritative controller.
-     *
-     * Vanilla Boat должна получать input от клиента сама, но для нашего
-     * скрытого carrier это ненадежно: кроме passenger-обмена нам нужен
-     * гарантированный серверный ход. Поэтому input из PlayerInputEvent
-     * преобразуется в плавную скорость Boat.
-     */
-    private void controlCarrier() {
-        Vector currentVelocity = carrier.getVelocity();
-
-        double targetSpeed = 0.0;
-
-        if (kForward && !kBackward) {
-            targetSpeed = CARRIER_MAX_FORWARD;
-        } else if (kBackward && !kForward) {
-            targetSpeed = -CARRIER_MAX_BACKWARD;
-        }
-
-        float currentYaw = carrier.getYaw();
-        double radians = Math.toRadians(currentYaw);
-
-        Vector direction = new Vector(
-                -Math.sin(radians),
-                0.0,
-                Math.cos(radians)
-        );
-
-        double targetX =
-                direction.getX() * targetSpeed;
-
-        double targetZ =
-                direction.getZ() * targetSpeed;
-
-        double response =
-                targetSpeed == 0.0
-                        ? CARRIER_BRAKE
-                        : CARRIER_ACCELERATION;
-
-        double nextX =
-                currentVelocity.getX()
-                        + (targetX - currentVelocity.getX())
-                        * response;
-
-        double nextZ =
-                currentVelocity.getZ()
-                        + (targetZ - currentVelocity.getZ())
-                        * response;
+        double speed =
+                currentSpeed;
 
         /*
-         * Boat сохраняет свою вертикальную физику на воде.
+         * Направление вперед определяется курсом корабля,
+         * а не направлением взгляда игрока.
          */
-        carrier.setVelocity(
+        double yawRadians =
+                Math.toRadians(shipYaw);
+
+        Vector direction =
                 new Vector(
-                        nextX,
-                        currentVelocity.getY(),
-                        nextZ
-                )
-        );
+                        -Math.sin(yawRadians),
+                        0.0,
+                        Math.cos(yawRadians)
+                );
 
-        if (kLeft ^ kRight) {
-            float directionSign = kLeft ? -1.0f : 1.0f;
+        Location desiredCenter =
+                anchorCenter.clone();
 
-            float nextYaw =
-                    norm(
-                            currentYaw
-                                    + directionSign
-                                    * CARRIER_TURN_SPEED
+        if (Math.abs(speed) > 0.00001) {
+            desiredCenter.add(
+                    direction.multiply(speed)
+            );
+        }
+
+        float desiredYaw =
+                norm(
+                        shipYaw
+                                + currentTurn
+                );
+
+        boolean wantsMove =
+                Math.abs(speed) > 0.00001;
+
+        boolean wantsTurn =
+                Math.abs(
+                        normalizeDelta(
+                                desiredYaw
+                                        - shipYaw
+                        )
+                ) > 0.00001f;
+
+        if (wantsMove || wantsTurn) {
+            /*
+             * Сначала пробуем выполнить полный шаг одновременно:
+             * движение + поворот.
+             */
+            boolean blocked =
+                    collisionModel.collidesBetweenTransforms(
+                            anchorCenter,
+                            shipYaw,
+                            desiredCenter,
+                            desiredYaw
                     );
 
-            carrier.setRotation(
-                    nextYaw,
-                    0.0f
-            );
-        }
-    }
+            if (!blocked) {
+                anchorCenter =
+                        desiredCenter;
 
-    /**
-     * Обрабатывает изменение настоящего Vehicle.
-     *
-     * Сначала проверяет полную collision-модель корабля.
-     * Если новая позиция свободна — визуальная модель следует за Boat.
-     * Если занята — Boat возвращается к последнему допустимому состоянию.
-     */
-    public void processCarrierMove(
-            Location from,
-            Location to
-    ) {
-        if (correctingCarrier || to == null || to.getWorld() == null) {
-            return;
-        }
+                shipYaw =
+                        desiredYaw;
+            } else {
+                /*
+                 * Если движение уперлось, все равно разрешаем чистый
+                 * поворот на месте, если он безопасен.
+                 */
+                if (wantsTurn
+                        && collisionModel.collidesBetweenTransforms(
+                        anchorCenter,
+                        shipYaw,
+                        anchorCenter,
+                        desiredYaw
+                )) {
+                    currentTurn *= 0.25f;
+                } else {
+                    shipYaw =
+                            desiredYaw;
 
-        if (!carrier.isValid()) {
-            restoreBlocks();
-            return;
+                    if (wantsMove) {
+                        currentSpeed *= 0.20;
+                    }
+                }
+            }
         }
-
-        if (from == null) {
-            from = lastCarrierLocation != null
-                    ? lastCarrierLocation.clone()
-                    : carrier.getLocation().clone();
-        }
-
-        float nextYaw = norm(to.getYaw());
-        Location nextAnchor = anchorFromCarrier(to, nextYaw);
 
         /*
-         * ShipCollision хранит shape в исходной ориентации корабля.
-         * Поэтому ей нужен не абсолютный yaw мира, а delta относительно
-         * исходного курса при активации.
+         * Перемещаем только seat-anchor.
+         *
+         * Его yaw остается исходным — мышь игрока полностью независима
+         * от курса корабля.
          */
-        float currentCollisionYaw =
-                normalizeDelta(shipYaw - initialYaw);
+        Location helmLocation =
+                anchorCenter.clone();
 
-        float nextCollisionYaw =
-                normalizeDelta(nextYaw - initialYaw);
-
-        boolean collision = collisionModel.collidesBetweenTransforms(
-                to.getWorld(),
-                anchorCenter,
-                currentCollisionYaw,
-                nextAnchor,
-                nextCollisionYaw
+        helmLocation.add(
+                0.0,
+                HELM_VERTICAL_OFFSET,
+                0.0
         );
 
-        if (collision) {
-            correctingCarrier = true;
+        helmLocation.setYaw(
+                initialYaw
+        );
+        helmLocation.setPitch(
+                0.0f
+        );
 
-            try {
-                carrier.teleport(from);
-                carrier.setVelocity(new Vector());
+        helmAnchor.teleport(
+                helmLocation
+        );
 
-                /*
-                 * Не оставляем лодку с накопленным вращательным/линейным
-                 * импульсом после столкновения.
-                 */
-                carrier.setRotation(
-                        norm(from.getYaw()),
-                        0.0f
-                );
-            } finally {
-                correctingCarrier = false;
-            }
+        /*
+         * Визуальный корпус следует за одним общим anchor.
+         *
+         * Не телепортируем каждый Display в его мировые координаты.
+         */
+        updateDisplays(
+                Math.abs(
+                        normalizeDelta(
+                                shipYaw - oldYaw
+                        )
+                ) > 0.00001f
+        );
 
-            return;
+        /*
+         * Вода обновляется после принятия нового состояния.
+         */
+        if (!sameCenter(oldCenter, anchorCenter)) {
+            fillWater();
+        }
+    }
+
+    private void updatePhysics() {
+        double targetSpeed = 0.0;
+
+        if (forwardPressed
+                && !backwardPressed) {
+            targetSpeed =
+                    MAX_FORWARD_SPEED;
+        } else if (backwardPressed
+                && !forwardPressed) {
+            targetSpeed =
+                    -MAX_REVERSE_SPEED;
         }
 
-        float yawDelta = normalizeDelta(nextYaw - shipYaw);
+        double response =
+                Math.abs(targetSpeed)
+                        < Math.abs(currentSpeed)
+                        ? BRAKE_RESPONSE
+                        : ACCELERATION_RESPONSE;
 
-        anchorCenter = nextAnchor;
-        shipYaw = nextYaw;
-        lastCarrierLocation = to.clone();
+        currentSpeed =
+                approach(
+                        currentSpeed,
+                        targetSpeed,
+                        response
+                );
 
-        updateDisplays(Math.abs(yawDelta) > 0.0001f);
-        fillWater();
+        if (Math.abs(currentSpeed)
+                < 0.0005) {
+            currentSpeed = 0.0;
+        }
+
+        float targetTurn =
+                0.0f;
+
+        if (leftPressed
+                && !rightPressed) {
+            targetTurn =
+                    -MAX_TURN_SPEED;
+        } else if (rightPressed
+                && !leftPressed) {
+            targetTurn =
+                    MAX_TURN_SPEED;
+        }
+
+        double turnResponse =
+                Math.abs(targetTurn)
+                        < Math.abs(currentTurn)
+                        ? TURN_BRAKE_RESPONSE
+                        : TURN_ACCELERATION_RESPONSE;
+
+        currentTurn =
+                (float) approach(
+                        currentTurn,
+                        targetTurn,
+                        turnResponse
+                );
+
+        if (Math.abs(currentTurn)
+                < 0.005f) {
+            currentTurn = 0.0f;
+        }
     }
 
-    /**
-     * Получает точные collision-boxes BlockData в мировой позиции
-     * и переводит их в локальные координаты относительно anchorCenter.
-     */
-    private Location anchorFromCarrier(
-            Location carrierLocation,
-            float yaw
+    private void updateDisplays(
+            boolean rotated
     ) {
-        double delta = Math.toRadians(
-                yaw - initialYaw
+        Location helmLocation =
+                anchorCenter.clone();
+
+        helmLocation.add(
+                0.0,
+                HELM_VERTICAL_OFFSET,
+                0.0
         );
 
-        double cos = Math.cos(delta);
-        double sin = Math.sin(delta);
-
-        double x =
-                carrierLocation.getX()
-                        + carrierLocalAnchorX * cos
-                        - carrierLocalAnchorZ * sin;
-
-        double y =
-                carrierLocation.getY()
-                        + carrierLocalAnchorY;
-
-        double z =
-                carrierLocation.getZ()
-                        + carrierLocalAnchorX * sin
-                        + carrierLocalAnchorZ * cos;
-
-        Location result = carrierLocation.clone();
-        result.setX(x);
-        result.setY(y);
-        result.setZ(z);
-
-        return result;
-    }
-
-    private void updateDisplays(boolean rotated) {
-        double delta = Math.toRadians(
-                shipYaw - initialYaw
+        helmLocation.setYaw(
+                initialYaw
+        );
+        helmLocation.setPitch(
+                0.0f
         );
 
-        double cos = Math.cos(delta);
-        double sin = Math.sin(delta);
+        for (int i = 0;
+             i < originalBlocks.size();
+             i++) {
 
-        float rotation = (float) -delta;
-
-        for (int i = 0; i < originalBlocks.size(); i++) {
-            BlockDisplay display = displayEntities.get(i);
+            BlockDisplay display =
+                    displayEntities.get(i);
 
             if (!display.isValid()) {
                 continue;
             }
 
-            ShipBlockData block = originalBlocks.get(i);
-            Location target = displayLocations.get(i);
+            /*
+             * Один общий teleport target для всего корабля.
+             * Именно эта схема используется SimpleShips.
+             */
+            display.setTeleportDuration(
+                    DISPLAY_TELEPORT_DURATION
+            );
 
-            double centerX =
-                    anchorCenter.getX()
-                            + block.getLocalX() * cos
-                            - block.getLocalZ() * sin;
-
-            double centerY =
-                    anchorCenter.getY()
-                            + block.getLocalY()
-                            + 0.5;
-
-            double centerZ =
-                    anchorCenter.getZ()
-                            + block.getLocalX() * sin
-                            + block.getLocalZ() * cos;
-
-            target.setX(centerX - 0.5);
-            target.setY(centerY - 0.5);
-            target.setZ(centerZ - 0.5);
-            target.setYaw(0.0f);
-            target.setPitch(0.0f);
+            display.teleport(
+                    helmLocation
+            );
 
             /*
-             * Один новый серверный target на тик.
-             * teleportDuration=1 дает ровно один тик клиентской интерполяции.
+             * Rotation выполняется отдельно через Transformation.
+             * При движении вперед matrix не пересоздает мировую позицию.
              */
-            display.setTeleportDuration(1);
-            display.teleport(target);
+            Matrix4f matrix =
+                    displayMatrices.get(i);
 
+            double delta =
+                    Math.toRadians(
+                            normalizeDelta(
+                                    shipYaw
+                                            - initialYaw
+                            )
+                    );
+
+            matrix.identity()
+                    .rotateY(
+                            (float) delta
+                    );
+
+            ShipBlockData block =
+                    originalBlocks.get(i);
+
+            matrix.translate(
+                    block.getLocalX()
+                            - 0.5f,
+                    block.getLocalY()
+                            - (float) HELM_VERTICAL_OFFSET,
+                    block.getLocalZ()
+                            - 0.5f
+            );
+
+            /*
+             * Matrix меняем каждый tick потому, что внутренний currentYaw
+             * является непрерывным float-значением.
+             *
+             * Interpolation duration=0 здесь намеренно:
+             * плавность поступательного движения дает teleportDuration=3,
+             * а rotation становится плавным за счет малого currentTurn.
+             */
             if (rotated) {
-                Matrix4f matrix = displayMatrices.get(i);
-
-                matrix.identity()
-                        .translate(0.5f, 0.5f, 0.5f)
-                        .rotateY(rotation)
-                        .translate(-0.5f, -0.5f, -0.5f);
-
-                display.setInterpolationDelay(0);
-                display.setInterpolationDuration(1);
-                display.setTransformationMatrix(matrix);
+                display.setInterpolationDelay(-1);
+                display.setInterpolationDuration(0);
             }
+
+            display.setTransformationMatrix(
+                    matrix
+            );
         }
     }
 
-    private static Matrix4f createBlockMatrix(float rotation) {
-        return new Matrix4f()
-                .translate(0.5f, 0.5f, 0.5f)
-                .rotateY(rotation)
-                .translate(-0.5f, -0.5f, -0.5f);
-    }
-
-    private static Location blockWorldLocation(
+    private static Matrix4f createDisplayTransform(
             ShipBlockData block,
-            Location anchor,
             float deltaDegrees
     ) {
-        double delta = Math.toRadians(deltaDegrees);
-        double cos = Math.cos(delta);
-        double sin = Math.sin(delta);
+        Matrix4f matrix =
+                new Matrix4f().identity();
 
-        double centerX =
-                anchor.getX()
-                        + block.getLocalX() * cos
-                        - block.getLocalZ() * sin;
-
-        double centerY =
-                anchor.getY()
-                        + block.getLocalY()
-                        + 0.5;
-
-        double centerZ =
-                anchor.getZ()
-                        + block.getLocalX() * sin
-                        + block.getLocalZ() * cos;
-
-        return new Location(
-                anchor.getWorld(),
-                centerX - 0.5,
-                centerY - 0.5,
-                centerZ - 0.5
+        matrix.rotateY(
+                (float) Math.toRadians(
+                        deltaDegrees
+                )
         );
+
+        matrix.translate(
+                block.getLocalX()
+                        - 0.5f,
+                block.getLocalY()
+                        - (float) HELM_VERTICAL_OFFSET,
+                block.getLocalZ()
+                        - 0.5f
+        );
+
+        return matrix;
+    }
+
+    private static boolean sameCenter(
+            Location a,
+            Location b
+    ) {
+        return a.getWorld()
+                == b.getWorld()
+                && Math.abs(
+                a.getX() - b.getX()
+        ) < 0.000001
+                && Math.abs(
+                a.getY() - b.getY()
+        ) < 0.000001
+                && Math.abs(
+                a.getZ() - b.getZ()
+        ) < 0.000001;
+    }
+
+    private static double approach(
+            double current,
+            double target,
+            double response
+    ) {
+        return current
+                + (target - current)
+                * response;
+    }
+
+    private static int floorToInt(
+            double value
+    ) {
+        return (int) Math.floor(value);
+    }
+
+    private static float norm(
+            float yaw
+    ) {
+        yaw %= 360.0f;
+
+        if (yaw < 0.0f) {
+            yaw += 360.0f;
+        }
+
+        return yaw;
+    }
+
+    private static float normalizeDelta(
+            float delta
+    ) {
+        delta %= 360.0f;
+
+        if (delta > 180.0f) {
+            delta -= 360.0f;
+        }
+
+        if (delta < -180.0f) {
+            delta += 360.0f;
+        }
+
+        return delta;
     }
 
     private void captureSubmergedWake(Set<Block> blocks) {
@@ -853,9 +933,9 @@ public class ActiveShip {
         float playerYaw = playerLocation.getYaw();
         float playerPitch = playerLocation.getPitch();
 
-        if (carrier.isValid()) {
-            carrier.eject();
-            carrier.remove();
+        if (helmAnchor.isValid()) {
+            helmAnchor.eject();
+            helmAnchor.remove();
         }
 
         /*
@@ -1068,34 +1148,6 @@ public class ActiveShip {
         }
     }
 
-    private static boolean sameTransform(
-            Location a,
-            Location b
-    ) {
-        if (a == null || b == null) {
-            return false;
-        }
-
-        if (a.getWorld() != b.getWorld()) {
-            return false;
-        }
-
-        return Math.abs(
-                a.getX() - b.getX()
-        ) < 0.00001
-                && Math.abs(
-                a.getY() - b.getY()
-        ) < 0.00001
-                && Math.abs(
-                a.getZ() - b.getZ()
-        ) < 0.00001
-                && Math.abs(
-                normalizeDelta(
-                        a.getYaw() - b.getYaw()
-                )
-        ) < 0.00001f;
-    }
-
     private static int floorToInt(double value) {
         return (int) Math.floor(value);
     }
@@ -1282,17 +1334,6 @@ public class ActiveShip {
 
     public Player getPilot() {
         return pilot;
-    }
-
-    public Boat getCarrier() {
-        return carrier;
-    }
-
-    /**
-     * Совместимый alias для старого кода.
-     */
-    public Boat getRootEntity() {
-        return carrier;
     }
 
     private record RestoreEntry(
