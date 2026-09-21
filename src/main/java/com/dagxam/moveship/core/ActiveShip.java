@@ -388,12 +388,23 @@ public class ActiveShip {
         float nextYaw = norm(to.getYaw());
         Location nextAnchor = anchorFromCarrier(to, nextYaw);
 
+        /*
+         * ShipCollision хранит shape в исходной ориентации корабля.
+         * Поэтому ей нужен не абсолютный yaw мира, а delta относительно
+         * исходного курса при активации.
+         */
+        float currentCollisionYaw =
+                normalizeDelta(shipYaw - initialYaw);
+
+        float nextCollisionYaw =
+                normalizeDelta(nextYaw - initialYaw);
+
         boolean collision = collisionModel.collidesBetweenTransforms(
                 to.getWorld(),
                 anchorCenter,
-                shipYaw,
+                currentCollisionYaw,
                 nextAnchor,
-                nextYaw
+                nextCollisionYaw
         );
 
         if (collision) {
