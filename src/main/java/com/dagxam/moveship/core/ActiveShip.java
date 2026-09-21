@@ -244,12 +244,27 @@ public class ActiveShip {
          * Если клиент все равно рисует тень/часть модели, это будет
          * отдельным визуальным слоем, который можно скрыть персонально.
          */
+        /*
+         * ВАЖНО: Boat — non-living entity, поэтому setInvisible() для неё
+         * не гарантирует полное скрытие. Paper предоставляет visibility API
+         * именно для таких случаев.
+         */
         carrier.setInvisible(true);
+        carrier.setVisibleByDefault(false);
         carrier.setInvulnerable(true);
         carrier.setPersistent(false);
         carrier.setSilent(true);
         carrier.setPortalCooldown(20);
         carrier.setRotation(shipYaw, 0.0f);
+
+        /*
+         * На случай игроков, которые уже начали tracking entity до смены
+         * visibility. Новые игроки автоматически не увидят carrier из-за
+         * setVisibleByDefault(false).
+         */
+        for (Player viewer : anchorLocation.getWorld().getPlayers()) {
+            viewer.hideEntity(plugin, carrier);
+        }
 
         /*
          * Игрок становится настоящим пассажиром Boat.
