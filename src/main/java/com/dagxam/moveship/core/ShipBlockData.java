@@ -2,6 +2,11 @@ package com.dagxam.moveship.core;
 
 import org.bukkit.block.BlockState;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.util.BoundingBox;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Неизменяемый снимок одного блока корабля.
@@ -19,6 +24,7 @@ public final class ShipBlockData {
     private final int localZ;
     private final BlockData blockData;
     private final BlockState stateSnapshot;
+    private final List<BoundingBox> collisionBoxes;
 
     /**
      * Создает полный снимок блока, который используется ядром движения.
@@ -28,13 +34,17 @@ public final class ShipBlockData {
             int localY,
             int localZ,
             BlockData blockData,
-            BlockState stateSnapshot
+            BlockState stateSnapshot,
+            List<BoundingBox> collisionBoxes
     ) {
         this.localX = localX;
         this.localY = localY;
         this.localZ = localZ;
         this.blockData = blockData;
         this.stateSnapshot = stateSnapshot;
+        this.collisionBoxes = Collections.unmodifiableList(
+                new ArrayList<>(collisionBoxes)
+        );
     }
 
     public int getLocalX() {
@@ -55,5 +65,14 @@ public final class ShipBlockData {
 
     public BlockState getStateSnapshot() {
         return stateSnapshot;
+    }
+
+    /**
+     * Точные локальные collision-boxes блока.
+     *
+     * Координаты уже переведены относительно центра корабельного блока-якоря.
+     */
+    public List<BoundingBox> getCollisionBoxes() {
+        return collisionBoxes;
     }
 }
