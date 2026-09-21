@@ -28,22 +28,31 @@ public class ShipScanner {
             Block current = queue.poll();
             shipBlocks.add(current);
 
-            for (BlockFace face : new BlockFace[]{
-                    BlockFace.NORTH,
-                    BlockFace.SOUTH,
-                    BlockFace.EAST,
-                    BlockFace.WEST,
-                    BlockFace.UP,
-                    BlockFace.DOWN
-            }) {
-                Block neighbor = current.getRelative(face);
-                Location neighborLoc = neighbor.getLocation();
+            /*
+             * Корабль сканируется по всем 26 соседним клеткам.
+             * Это сохраняет части корпуса, которые соединены ступенями,
+             * полублоками, декоративными элементами или угловым стыком.
+             *
+             * Вода, воздух и прочие недопустимые блоки не проходят
+             * isValidShipBlock(), поэтому сканирование не уходит в океан.
+             */
+            for (int x = -1; x <= 1; x++) {
+                for (int y = -1; y <= 1; y++) {
+                    for (int z = -1; z <= 1; z++) {
+                        if (x == 0 && y == 0 && z == 0) {
+                            continue;
+                        }
 
-                if (!visited.contains(neighborLoc)) {
-                    visited.add(neighborLoc);
+                        Block neighbor = current.getRelative(x, y, z);
+                        Location neighborLoc = neighbor.getLocation();
 
-                    if (isValidShipBlock(neighbor)) {
-                        queue.add(neighbor);
+                        if (!visited.contains(neighborLoc)) {
+                            visited.add(neighborLoc);
+
+                            if (isValidShipBlock(neighbor)) {
+                                queue.add(neighbor);
+                            }
+                        }
                     }
                 }
             }
