@@ -477,6 +477,7 @@ public class ActiveShip {
              */
             boolean blocked =
                     collisionModel.collidesBetweenTransforms(
+                            anchorCenter.getWorld(),
                             anchorCenter,
                             shipYaw,
                             desiredCenter,
@@ -496,6 +497,7 @@ public class ActiveShip {
                  */
                 if (wantsTurn
                         && collisionModel.collidesBetweenTransforms(
+                        anchorCenter.getWorld(),
                         anchorCenter,
                         shipYaw,
                         anchorCenter,
