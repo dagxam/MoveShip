@@ -89,7 +89,7 @@ public class ShipGUIListener implements Listener {
                     scannedShips.remove(uuid);
                     scannedCores.remove(uuid);
                     player.sendMessage(Component.text(
-                        "Корабль активирован! W/S — движение, A/D — поворот.",
+                        "Корабль активирован! W/S — вперёд/назад по направлению кафедры, A/D — плавный поворот.",
                         NamedTextColor.GREEN));
                 } else {
                     player.sendMessage(Component.text(
