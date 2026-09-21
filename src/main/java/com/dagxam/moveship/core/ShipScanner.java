@@ -79,7 +79,7 @@ public class ShipScanner {
         if (name.endsWith("_GLASS") || name.endsWith("_GLASS_PANE") || 
             name.endsWith("_WOOL") || name.endsWith("_CARPET") ||
             name.endsWith("_SHULKER_BOX") || name.endsWith("_TORCH") || 
-            name.endsWith("_LANTERN") || name.contains("RAIL")) {
+            name.endsWith("_LANTERN") || name.endsWith("_CHAIN") || name.contains("RAIL")) {
             return true;
         }
 
@@ -90,7 +90,6 @@ public class ShipScanner {
             case GLASS_PANE:
             case TINTED_GLASS:
             case IRON_BARS:
-            case CHAIN:
             // Спец. декор
             case LIGHTNING_ROD:
             case END_ROD:
