@@ -744,6 +744,32 @@ public class ActiveShip {
     }
 
     /**
+     * Переводит точную collision shape одного блока в локальные координаты
+     * относительно центра блока-якоря корабля.
+     */
+    private static List<BoundingBox> captureLocalCollisionBoxes(
+            BlockData data,
+            Location blockLocation,
+            Location anchor
+    ) {
+        VoxelShape shape = data.getCollisionShape(blockLocation);
+        List<BoundingBox> boxes = new ArrayList<>();
+
+        for (BoundingBox box : shape.getBoundingBoxes()) {
+            boxes.add(new BoundingBox(
+                    box.getMinX() - anchor.getX(),
+                    box.getMinY() - anchor.getY(),
+                    box.getMinZ() - anchor.getZ(),
+                    box.getMaxX() - anchor.getX(),
+                    box.getMaxY() - anchor.getY(),
+                    box.getMaxZ() - anchor.getZ()
+            ));
+        }
+
+        return boxes;
+    }
+
+    /**
      * Проверяет, можно ли кораблю занять новое положение/угол.
      *
      * Проверка остается серверной и выполняется до изменения anchorCenter,
@@ -755,35 +781,11 @@ public class ActiveShip {
             return false;
         }
 
-        double delta = Math.toRadians(yaw - initialYaw);
-        double cos = Math.cos(delta);
-        double sin = Math.sin(delta);
-
-        for (ShipBlockData block : originalBlocks) {
-            double rotatedX =
-                    block.getLocalX() * cos
-                            - block.getLocalZ() * sin;
-
-            double rotatedZ =
-                    block.getLocalX() * sin
-                            + block.getLocalZ() * cos;
-
-            int targetBlockX = floorToInt(target.getX() + rotatedX);
-            int targetBlockY = target.getBlockY() + block.getLocalY();
-            int targetBlockZ = floorToInt(target.getZ() + rotatedZ);
-
-            Block worldBlock = target.getWorld().getBlockAt(
-                    targetBlockX,
-                    targetBlockY,
-                    targetBlockZ
-            );
-
-            if (worldBlock.getType().isSolid()) {
-                return false;
-            }
-        }
-
-        return true;
+        return !collisionModel.collides(
+                target.getWorld(),
+                target,
+                yaw - initialYaw
+        );
     }
 
     public void restoreBlocks() {
