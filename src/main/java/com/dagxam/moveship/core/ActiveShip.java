@@ -100,7 +100,7 @@ public class ActiveShip {
      * Display обновляется раз в 2 тика и интерполирует ровно эти 2 тика.
      * Это дает плавное движение на клиенте без постоянного teleport().
      */
-    private static final int DISPLAY_INTERPOLATION_TICKS = 2;
+    private static final int DISPLAY_INTERPOLATION_TICKS = 1;
 
     /**
      * После ухода корабля от исходной позиции Display Entity переносится
@@ -399,12 +399,12 @@ public class ActiveShip {
          * Два серверных тика физики складываются в один клиентский
          * интерполируемый сегмент. При этом серверная физика остается 20 TPS.
          */
-        renderTickCounter++;
-
-        if (renderTickCounter >= DISPLAY_INTERPOLATION_TICKS) {
-            renderTickCounter = 0;
-            updateDisplays(rotated);
-        }
+        /*
+         * При teleportDuration=1 Display получает новое серверное положение
+         * каждый тик и ровно один тик на его клиентскую интерполяцию.
+         */
+        renderTickCounter = 0;
+        updateDisplays(rotated);
 
     }
 
