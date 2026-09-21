@@ -13,6 +13,7 @@ import org.bukkit.block.data.Directional;
 import org.bukkit.block.data.MultipleFacing;
 import org.bukkit.block.data.Orientable;
 import org.bukkit.block.data.Rotatable;
+import org.bukkit.block.data.Waterlogged;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.Player;
@@ -85,6 +86,16 @@ public class ActiveShip {
     private BukkitTask task;
 
     /**
+     * Координаты клеток, которые были частью погруженной части корабля.
+     * После удаления физических блоков они сразу заменяются водой, а затем
+     * бывшие клетки корабля остаются заполненными водой как кильватерный след.
+     */
+    private final Set<BP> submergedWake = new HashSet<>();
+
+    private record BP(int x, int y, int z) {
+    }
+
+    /**
      * Положение игрока относительно центра корабля в момент старта.
      * Этот offset вращается вместе с корпусом, поэтому игрок остается
      * прикрепленным к тому же месту штурвала.
@@ -146,6 +157,13 @@ public class ActiveShip {
         this.seatLocalZ = pilotStart.getZ() - anchorCenter.getZ();
 
         /*
+         * До удаления блоков вычисляем клетки под ватерлинией, которые будут
+         * освобождены кораблем. Они должны сразу стать водой, иначе после
+         * активации на поверхности остается пустой "котлован".
+         */
+        captureSubmergedWake(blocks);
+
+        /*
          * КРИТИЧНО ДЛЯ СОХРАННОСТИ:
          * сначала снимаем полный snapshot ВСЕХ блоков и TileState,
          * только после этого удаляем блоки из мира.
@@ -186,6 +204,9 @@ public class ActiveShip {
             }
             block.setType(Material.AIR, false);
         }
+
+        // Сразу закрываем оставшиеся на воде отверстия от корпуса.
+        fillInitialWater();
 
         /*
          * Root только для посадки игрока.
@@ -334,11 +355,14 @@ public class ActiveShip {
 
         if (moved) {
             /*
-             * Корпус обновляется КАЖДЫЙ тик:
-             * это одновременно перемещение и вращение.
+             * При прямом движении используется только teleport-интерполяция.
+             * Transformation меняется только когда действительно изменился
+             * угол корпуса. Это не сбивает клиентскую интерполяцию движения.
              */
-            updateDisplays();
+            updateDisplays(rotated);
+            fillWater();
         }
+
     }
 
     private void updatePhysics() {
@@ -411,6 +435,9 @@ public class ActiveShip {
                         + seatLocalX * sin
                         + seatLocalZ * cos;
 
+        float pilotYaw = pilot.getLocation().getYaw();
+        float pilotPitch = pilot.getLocation().getPitch();
+
         Location seat = rootEntity.getLocation();
 
         if (Math.abs(seat.getX() - seatX) > 0.0001
@@ -427,6 +454,7 @@ public class ActiveShip {
         }
 
         rootEntity.setRotation(0.0f, 0.0f);
+        preservePilotRotation(pilotYaw, pilotPitch);
 
         /*
          * Пока игрок является пассажиром штурвала, его собственное физическое
@@ -436,7 +464,7 @@ public class ActiveShip {
         pilot.setVelocity(new Vector());
     }
 
-    private void updateDisplays() {
+    private void updateDisplays(boolean rotated) {
         double delta = Math.toRadians(shipYaw - initialYaw);
         double cos = Math.cos(delta);
         double sin = Math.sin(delta);
@@ -479,14 +507,18 @@ public class ActiveShip {
 
             display.teleport(location);
 
-            Matrix4f matrix = displayMatrices.get(i);
+            if (rotated) {
+                Matrix4f matrix = displayMatrices.get(i);
 
-            matrix.identity()
-                    .translate(0.5f, 0.5f, 0.5f)
-                    .rotateY(rotation)
-                    .translate(-0.5f, -0.5f, -0.5f);
+                matrix.identity()
+                        .translate(0.5f, 0.5f, 0.5f)
+                        .rotateY(rotation)
+                        .translate(-0.5f, -0.5f, -0.5f);
 
-            display.setTransformationMatrix(matrix);
+                display.setInterpolationDelay(0);
+                display.setInterpolationDuration(1);
+                display.setTransformationMatrix(matrix);
+            }
         }
     }
 
@@ -527,6 +559,130 @@ public class ActiveShip {
                 centerY - 0.5,
                 centerZ - 0.5
         );
+    }
+
+    /**
+     * Определяет ватерлинию по соседним жидкостям и запоминает клетки
+     * корпуса, которые находились в воде.
+     */
+    private void captureSubmergedWake(Set<Block> blocks) {
+        int seaLevel = Integer.MIN_VALUE;
+
+        for (Block block : blocks) {
+            for (BlockFace face : new BlockFace[]{
+                    BlockFace.NORTH,
+                    BlockFace.SOUTH,
+                    BlockFace.EAST,
+                    BlockFace.WEST,
+                    BlockFace.DOWN
+            }) {
+                Block neighbor = block.getRelative(face);
+                if (blocks.contains(neighbor)) {
+                    continue;
+                }
+
+                Material material = neighbor.getType();
+                if (material == Material.WATER
+                        || material == Material.BUBBLE_COLUMN
+                        || material == Material.SEAGRASS
+                        || material == Material.TALL_SEAGRASS
+                        || material == Material.KELP) {
+                    seaLevel = Math.max(seaLevel, neighbor.getY());
+                }
+            }
+        }
+
+        if (seaLevel == Integer.MIN_VALUE) {
+            return;
+        }
+
+        for (Block block : blocks) {
+            if (block.getY() <= seaLevel) {
+                submergedWake.add(new BP(
+                        block.getX(),
+                        block.getY(),
+                        block.getZ()
+                ));
+            }
+        }
+    }
+
+    /**
+     * Немедленно заменяет удаленные подводные клетки корабля источниками воды.
+     * Physics=false исключает лавинообразное распространение воды на активации.
+     */
+    private void fillInitialWater() {
+        if (submergedWake.isEmpty()) {
+            return;
+        }
+
+        for (BP cell : submergedWake) {
+            Block block = anchorCenter.getWorld().getBlockAt(
+                    cell.x(),
+                    cell.y(),
+                    cell.z()
+            );
+
+            if (block.getType().isAir() || block.getType() == Material.WATER) {
+                block.setType(Material.WATER, false);
+            }
+        }
+    }
+
+    /**
+     * После движения закрывает старые клетки следа водой и не перезаписывает
+     * блок, который уже успел поставить другой игрок/плагин.
+     */
+    private void fillWater() {
+        if (submergedWake.isEmpty()) {
+            return;
+        }
+
+        Set<BP> occupied = new HashSet<>();
+        double delta = Math.toRadians(shipYaw - initialYaw);
+        double cos = Math.cos(delta);
+        double sin = Math.sin(delta);
+
+        for (ShipBlockData data : originalBlocks) {
+            int x = floorToInt(
+                    anchorCenter.getX()
+                            + data.getLocalX() * cos
+                            - data.getLocalZ() * sin
+            );
+            int y = floorToInt(
+                    anchorCenter.getY()
+                            + data.getLocalY()
+            );
+            int z = floorToInt(
+                    anchorCenter.getZ()
+                            + data.getLocalX() * sin
+                            + data.getLocalZ() * cos
+            );
+
+            occupied.add(new BP(x, y, z));
+        }
+
+        submergedWake.removeIf(cell -> {
+            if (occupied.contains(cell)) {
+                return false;
+            }
+
+            Block block = anchorCenter.getWorld().getBlockAt(
+                    cell.x(),
+                    cell.y(),
+                    cell.z()
+            );
+
+            if (block.getType().isAir()) {
+                block.setType(Material.WATER, false);
+            }
+
+            return true;
+        });
+    }
+
+    private void preservePilotRotation(float yaw, float pitch) {
+        pilot.setRotation(yaw, pitch);
     }
 
     /**
@@ -642,8 +798,15 @@ public class ActiveShip {
          * Сначала весь physical block layout.
          */
         for (RestoreEntry entry : entries) {
-            entry.block().setType(entry.blockData().getMaterial(), false);
-            entry.block().setBlockData(entry.blockData(), false);
+            BlockData data = entry.blockData();
+
+            // Восстанавливаем waterlogged-состояние, если под блоком есть вода.
+            if (entry.block().getType() == Material.WATER && data instanceof Waterlogged waterlogged) {
+                waterlogged.setWaterlogged(true);
+            }
+
+            entry.block().setType(data.getMaterial(), false);
+            entry.block().setBlockData(data, false);
         }
 
         /*
