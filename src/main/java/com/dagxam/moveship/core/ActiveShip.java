@@ -88,6 +88,28 @@ public class ActiveShip {
     private BukkitTask task;
 
     /**
+     * Сохраняем исходное состояние гравитации игрока.
+     * Во время управления кораблем гравитация выключена, чтобы игрок
+     * не падал, поскольку он больше не является пассажиром vehicle.
+     */
+    private final boolean pilotHadGravity;
+
+    private int renderTickCounter;
+
+    /**
+     * Display обновляется раз в 2 тика и интерполирует ровно эти 2 тика.
+     * Это дает плавное движение на клиенте без постоянного teleport().
+     */
+    private static final int DISPLAY_INTERPOLATION_TICKS = 2;
+
+    /**
+     * После ухода корабля от исходной позиции Display Entity переносится
+     * ближе к кораблю. Одновременная компенсация через Transformation
+     * сохраняет визуальную мировую позицию блока.
+     */
+    private static final double DISPLAY_RECENTER_DISTANCE_SQUARED = 48.0 * 48.0;
+
+    /**
      * Координаты клеток, которые были частью погруженной части корабля.
      * После удаления физических блоков они сразу заменяются водой, а затем
      * бывшие клетки корабля остаются заполненными водой как кильватерный след.
@@ -143,6 +165,8 @@ public class ActiveShip {
         this.anchorCenter.setWorld(anchorLocation.getWorld());
 
         Location pilotStart = pilot.getLocation().clone();
+
+        this.pilotHadGravity = pilot.hasGravity();
 
         this.shipYaw = pilotStart.getYaw();
         this.initialYaw = this.shipYaw;
@@ -231,10 +255,19 @@ public class ActiveShip {
                 }
         );
 
-        if (!rootEntity.addPassenger(pilot)) {
-            rootEntity.remove();
-            throw new IllegalStateException("Не удалось посадить игрока на штурвал");
-        }
+        /*
+         * Игрок больше НЕ является пассажиром rootEntity.
+         *
+         * Это принципиально для Minecraft 26.3:
+         * vehicle может участвовать в синхронизации yaw пассажира,
+         * из-за чего курс корабля начинает влиять на взгляд.
+         *
+         * Вместо этого сервер удерживает только XYZ игрока на штурвале,
+         * а yaw/pitch полностью принадлежат игроку и мыши.
+         */
+        pilot.setGravity(false);
+        pilot.setFallDistance(0.0f);
+        pilot.setVelocity(new Vector());
 
         /*
          * Каждый BlockDisplay управляется непосредственно.
@@ -293,18 +326,6 @@ public class ActiveShip {
             return;
         }
 
-        /*
-         * Если игрок каким-либо другим плагином/механикой оказался не на root,
-         * считаем это выходом со штурвала.
-         *
-         * EntityDismountEvent обычно обработает это раньше, но проверка здесь
-         * закрывает случаи, когда транспортирование произошло нестандартно.
-         */
-        if (pilot.getVehicle() != rootEntity) {
-            restoreBlocks();
-            return;
-        }
-
         updatePhysics();
 
         float nextYaw = shipYaw + currentTurn;
@@ -356,13 +377,19 @@ public class ActiveShip {
         updateSeat();
 
         if (moved) {
-            /*
-             * При прямом движении используется только teleport-интерполяция.
-             * Transformation меняется только когда действительно изменился
-             * угол корпуса. Это не сбивает клиентскую интерполяцию движения.
-             */
-            updateDisplays(rotated);
             fillWater();
+        }
+
+        /*
+         * Не отправляем новую Transformation каждый тик.
+         * Два серверных тика физики складываются в один клиентский
+         * интерполируемый сегмент. При этом серверная физика остается 20 TPS.
+         */
+        renderTickCounter++;
+
+        if (renderTickCounter >= DISPLAY_INTERPOLATION_TICKS || moved) {
+            renderTickCounter = 0;
+            updateDisplays(rotated);
         }
 
     }
@@ -430,7 +457,7 @@ public class ActiveShip {
      * самого игрока с посадочного места.
      */
     public void constrainPilotMove(PlayerMoveEvent event) {
-        if (event.getPlayer() != pilot || pilot.getVehicle() != rootEntity) {
+        if (event.getPlayer() != pilot) {
             return;
         }
 
@@ -464,18 +491,13 @@ public class ActiveShip {
     }
 
     /**
-     * Немедленно синхронизирует только направление взгляда пилота
-     * с его посадочным root. Курс корабля здесь не используется.
+     * Перемещает игрока к расчетной точке штурвала без использования
+     * vehicle-пассажира.
+     *
+     * XYZ контролируются сервером.
+     * Yaw/Pitch вообще здесь не изменяются — поэтому мышь полностью
+     * независима от курса корабля.
      */
-    public void updatePilotView(float yaw, float pitch) {
-        if (pilot.getVehicle() != rootEntity) {
-            return;
-        }
-
-        rootEntity.setRotation(yaw, 0.0f);
-        pilot.setRotation(yaw, pitch);
-    }
-
     private void updateSeat() {
         double delta = Math.toRadians(shipYaw - initialYaw);
         double cos = Math.cos(delta);
@@ -493,59 +515,45 @@ public class ActiveShip {
                         + seatLocalX * sin
                         + seatLocalZ * cos;
 
-        float pilotYaw = pilot.getLocation().getYaw();
-        float pilotPitch = pilot.getLocation().getPitch();
+        Location playerLocation = pilot.getLocation();
 
-        Location seat = rootEntity.getLocation();
-
-        double dx = seatX - seat.getX();
-        double dy = seatY - seat.getY();
-        double dz = seatZ - seat.getZ();
+        double dx = seatX - playerLocation.getX();
+        double dy = seatY - playerLocation.getY();
+        double dz = seatZ - playerLocation.getZ();
 
         /*
-         * ArmorStand не имеет Display-interpolation. Для игрока это особенно
-         * важно: teleport() каждый тик дает заметный ступенчатый перенос камеры.
-         *
-         * Поэтому обычное движение штурвала выполняется через Entity velocity.
-         * Velocity у Entity задается в блоках за тик и позволяет серверу вести
-         * пассажира непрерывно вместе с машиной.
-         *
-         * Если каким-либо плагином/телепортом возник большой рассинхрон,
-         * выполняем одну корректирующую телепортацию.
+         * При нормальном ходе игрок перемещается через velocity.
+         * Это не телепортирует камеру каждый тик.
          */
         double errorSquared = dx * dx + dy * dy + dz * dz;
 
-        if (errorSquared > 0.75 * 0.75) {
-            seat.setX(seatX);
-            seat.setY(seatY);
-            seat.setZ(seatZ);
-            seat.setYaw(0.0f);
-            seat.setPitch(0.0f);
+        if (errorSquared > 1.0) {
+            Location corrected = playerLocation.clone();
+            corrected.setX(seatX);
+            corrected.setY(seatY);
+            corrected.setZ(seatZ);
 
-            rootEntity.teleport(seat);
-            rootEntity.setVelocity(new Vector());
+            /*
+             * yaw/pitch намеренно оставляем от текущего игрока.
+             */
+            pilot.teleport(corrected);
+            pilot.setVelocity(new Vector());
         } else {
-            rootEntity.setVelocity(new Vector(dx, dy, dz));
+            pilot.setVelocity(new Vector(dx, dy, dz));
         }
 
-        rootEntity.setRotation(pilotYaw, 0.0f);
-        preservePilotRotation(pilotYaw, pilotPitch);
-
-        /*
-         * Пока игрок является пассажиром штурвала, его собственное физическое
-         * ускорение не должно сдвигать его относительно посадочного места.
-         */
         pilot.setFallDistance(0.0f);
-        pilot.setVelocity(new Vector());
     }
 
     /**
-     * Обновляет визуальное состояние корабля только через Display
-     * Transformation. Сам entity больше не телепортируется каждый тик.
+     * Плавное визуальное движение через Transformation.
      *
-     * Это особенно важно для движения вперед/назад: клиент получает
-     * последовательность гладких трансформаций вместо цепочки телепортов,
-     * которые конкурируют между собой за интерполяцию.
+     * Display Entity не телепортируется каждый тик. Его исходная мировая
+     * позиция используется как стабильная база, а актуальное перемещение
+     * корабля задается translation в матрице.
+     *
+     * Culling отключен через width/height=0, поэтому большая Translation
+     * не приводит к исчезновению модели.
      */
     private void updateDisplays(boolean rotated) {
         double delta = Math.toRadians(shipYaw - initialYaw);
@@ -561,7 +569,6 @@ public class ActiveShip {
             }
 
             ShipBlockData block = originalBlocks.get(i);
-            Location initial = displayLocations.get(i);
 
             double centerX =
                     anchorCenter.getX()
@@ -582,28 +589,61 @@ public class ActiveShip {
             double currentCornerY = centerY - 0.5;
             double currentCornerZ = centerZ - 0.5;
 
-            double tx = currentCornerX - initial.getX();
-            double ty = currentCornerY - initial.getY();
-            double tz = currentCornerZ - initial.getZ();
+            Location base = displayLocations.get(i);
+
+            /*
+             * Пока корабль находится недалеко от исходной позиции entity,
+             * можем полностью отказаться от teleport().
+             *
+             * При дальнем ходе recenter нужен только для server-side entity
+             * tracking. Визуальная мировая координата сохраняется за счет
+             * компенсационной Transformation.
+             */
+            if (base.distanceSquared(
+                    new Location(
+                            anchorCenter.getWorld(),
+                            currentCornerX,
+                            currentCornerY,
+                            currentCornerZ
+                    )
+            ) > DISPLAY_RECENTER_DISTANCE_SQUARED) {
+
+                base.setX(currentCornerX);
+                base.setY(currentCornerY);
+                base.setZ(currentCornerZ);
+
+                display.teleport(base);
+            }
+
+            float tx = (float) (currentCornerX - base.getX());
+            float ty = (float) (currentCornerY - base.getY());
+            float tz = (float) (currentCornerZ - base.getZ());
 
             Matrix4f matrix = displayMatrices.get(i);
 
             /*
-             * Entity location остается неизменным.
-             * Matrix переводит блок на новое мировое положение и вращает его
-             * вокруг собственного центра.
+             * Сначала переводим куб от entity origin в его текущую мировую
+             * позицию, затем вращаем вокруг центра самого куба.
              */
             matrix.identity()
                     .translate(
-                            (float) (tx + 0.5),
-                            (float) (ty + 0.5),
-                            (float) (tz + 0.5)
+                            tx + 0.5f,
+                            ty + 0.5f,
+                            tz + 0.5f
                     )
                     .rotateY(rotation)
-                    .translate(-0.5f, -0.5f, -0.5f);
+                    .translate(
+                            -0.5f,
+                            -0.5f,
+                            -0.5f
+                    );
 
+            /*
+             * Rotation и translation входят в один набор interpolated-полей
+             * Display Entity. Обновляем их одним вызовом.
+             */
             display.setInterpolationDelay(0);
-            display.setInterpolationDuration(3);
+            display.setInterpolationDuration(DISPLAY_INTERPOLATION_TICKS);
             display.setTransformationMatrix(matrix);
         }
     }
@@ -926,6 +966,9 @@ public class ActiveShip {
                         cos,
                         sin
                 );
+
+        pilot.setVelocity(new Vector());
+        pilot.setGravity(pilotHadGravity);
 
         Location land = playerLocation.clone();
         land.setX(anchorCenter.getX());
