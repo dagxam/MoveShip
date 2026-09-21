@@ -46,13 +46,6 @@ public class ShipMovementListener implements Listener {
         ActiveShip ship = ShipManager.getShip(event.getPlayer());
         if (ship == null) return;
         ship.constrainPilotMove(event);
-
-        if (event.getTo() != null) {
-            ship.updatePilotView(
-                    event.getTo().getYaw(),
-                    event.getTo().getPitch()
-            );
-        }
     }
 
     @EventHandler
