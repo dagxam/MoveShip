@@ -12,6 +12,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDismountEvent;
 import org.bukkit.event.player.PlayerInputEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 
 public class ShipMovementListener implements Listener {
@@ -33,6 +34,18 @@ public class ShipMovementListener implements Listener {
             input.isLeft(),
             input.isRight()
         );
+    }
+
+    /**
+     * Во время управления кораблем игрок не может физически сместиться
+     * с точки штурвала. yaw/pitch из события сохраняются, поэтому мышь
+     * продолжает свободно вращать голову.
+     */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPlayerMove(PlayerMoveEvent event) {
+        ActiveShip ship = ShipManager.getShip(event.getPlayer());
+        if (ship == null) return;
+        ship.constrainPilotMove(event);
     }
 
     @EventHandler
