@@ -21,7 +21,6 @@ import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
-import org.bukkit.util.BoundingBox;
 import org.bukkit.util.Vector;
 import org.joml.Matrix4f;
 
@@ -56,7 +55,7 @@ public class ActiveShip {
     /**
      * Точная collision-модель исходного корабля.
      */
-    private final ShipCollisionModel collisionModel;
+    private final ShipCollision collisionModel;
 
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
@@ -181,21 +180,13 @@ public class ActiveShip {
             BlockData blockData = block.getBlockData().clone();
             BlockState snapshot = block.getState(true);
 
-            List<BoundingBox> collisionBoxes =
-                    captureLocalCollisionBoxes(
-                            blockData,
-                            block.getLocation(),
-                            anchorCenter
-                    );
-
             originalBlocks.add(
                     new ShipBlockData(
                             localX,
                             localY,
                             localZ,
                             blockData,
-                            snapshot,
-                            collisionBoxes
+                            snapshot
                     )
             );
         }
