@@ -3,8 +3,7 @@ package com.dagxam.moveship.core;
 import com.dagxam.moveship.MoveShipPlugin;
 import org.bukkit.Axis;
 import org.bukkit.Bukkit;
-import org.bukkit.EntityEffect;
-import org.bukkit.EntityType;
+import org.bukkit.entity.EntityType;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -22,6 +21,7 @@ import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.util.BoundingBox;
 import org.bukkit.util.Vector;
 import org.joml.Matrix4f;
 
@@ -56,7 +56,7 @@ public class ActiveShip {
     /**
      * Точная collision-модель исходного корабля.
      */
-    private final ShipCollision collisionModel;
+    private final ShipCollisionModel collisionModel;
 
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
@@ -181,13 +181,21 @@ public class ActiveShip {
             BlockData blockData = block.getBlockData().clone();
             BlockState snapshot = block.getState(true);
 
+            List<BoundingBox> collisionBoxes =
+                    captureLocalCollisionBoxes(
+                            blockData,
+                            block.getLocation(),
+                            anchorCenter
+                    );
+
             originalBlocks.add(
                     new ShipBlockData(
                             localX,
                             localY,
                             localZ,
                             blockData,
-                            snapshot
+                            snapshot,
+                            collisionBoxes
                     )
             );
         }
@@ -195,9 +203,16 @@ public class ActiveShip {
         /*
          * ShipCollision строится пока реальные блоки еще доступны.
          */
-        this.collisionModel = new ShipCollision(
-                originalBlocks,
-                anchorCenter
+        List<BoundingBox> localCollisionBoxes = new ArrayList<>();
+
+        for (ShipBlockData block : originalBlocks) {
+            localCollisionBoxes.addAll(
+                    block.getCollisionBoxes()
+            );
+        }
+
+        this.collisionModel = new ShipCollisionModel(
+                localCollisionBoxes
         );
 
         /*
@@ -427,6 +442,37 @@ public class ActiveShip {
 
         updateDisplays(Math.abs(yawDelta) > 0.0001f);
         fillWater();
+    }
+
+    /**
+     * Получает точные collision-boxes BlockData в мировой позиции
+     * и переводит их в локальные координаты относительно anchorCenter.
+     */
+    private static List<BoundingBox> captureLocalCollisionBoxes(
+            BlockData blockData,
+            Location blockLocation,
+            Location anchorCenter
+    ) {
+        List<BoundingBox> result = new ArrayList<>();
+
+        for (BoundingBox box :
+                blockData
+                        .getCollisionShape(blockLocation)
+                        .getBoundingBoxes()) {
+
+            result.add(
+                    new BoundingBox(
+                            box.getMinX() - anchorCenter.getX(),
+                            box.getMinY() - anchorCenter.getY(),
+                            box.getMinZ() - anchorCenter.getZ(),
+                            box.getMaxX() - anchorCenter.getX(),
+                            box.getMaxY() - anchorCenter.getY(),
+                            box.getMaxZ() - anchorCenter.getZ()
+                    )
+            );
+        }
+
+        return result;
     }
 
     private Location anchorFromCarrier(
