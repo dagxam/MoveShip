@@ -573,27 +573,14 @@ public class ActiveShip {
         }
 
         /*
-         * Перемещаем только seat-anchor.
+         * Перемещаем carrier через velocity.
          *
          * Его yaw остается исходным — мышь игрока полностью независима
          * от курса корабля.
+         *
+         * Величина velocity вычисляется из принятого за этот тик
+         * смещения anchorCenter.
          */
-        Location helmLocation =
-                anchorCenter.clone();
-
-        helmLocation.add(
-                0.0,
-                HELM_VERTICAL_OFFSET,
-                0.0
-        );
-
-        helmLocation.setYaw(
-                initialYaw
-        );
-        helmLocation.setPitch(
-                0.0f
-        );
-
         /*
          * Больше НЕ телепортируем carrier каждый тик.
          *
@@ -624,13 +611,7 @@ public class ActiveShip {
          *
          * Не телепортируем каждый Display в его мировые координаты.
          */
-        updateDisplays(
-                Math.abs(
-                        normalizeDelta(
-                                shipYaw - oldYaw
-                        )
-                ) > 0.00001f
-        );
+        updateDisplays();
 
         /*
          * Вода обновляется после принятия нового состояния.
@@ -702,9 +683,7 @@ public class ActiveShip {
         }
     }
 
-    private void updateDisplays(
-            boolean rotated
-    ) {
+    private void updateDisplays() {
         Location helmLocation =
                 anchorCenter.clone();
 
@@ -1109,6 +1088,10 @@ public class ActiveShip {
 
     public void restoreBlocks() {
         stopInternal();
+
+        if (helmAnchor.isValid()) {
+            helmAnchor.setVelocity(new Vector());
+        }
 
         Location playerLocation = pilot.getLocation().clone();
         float playerYaw = playerLocation.getYaw();
