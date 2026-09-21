@@ -2,7 +2,6 @@ package com.dagxam.moveship.core;
 
 import org.bukkit.Location;
 import org.bukkit.block.Block;
-import org.bukkit.entity.Boat;
 import org.bukkit.entity.Player;
 
 import java.util.HashMap;
@@ -10,16 +9,30 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-public class ShipManager {
+/**
+ * Реестр активных кораблей.
+ *
+ * Корабль идентифицируется пилотом, потому что после перехода на
+ * SimpleShips-подобную архитектуру отдельный Boat carrier больше не нужен.
+ */
+public final class ShipManager {
 
-    private static final Map<UUID, ActiveShip> activeShips = new HashMap<>();
+    private static final Map<UUID, ActiveShip> activeShips =
+            new HashMap<>();
+
+    private ShipManager() {
+    }
 
     public static boolean activateShip(
             Player player,
             Location coreLocation,
             Set<Block> shipBlocks
     ) {
-        if (player == null || activeShips.containsKey(player.getUniqueId())) {
+        if (player == null
+                || coreLocation == null
+                || shipBlocks == null
+                || shipBlocks.isEmpty()
+                || activeShips.containsKey(player.getUniqueId())) {
             return false;
         }
 
@@ -38,7 +51,9 @@ public class ShipManager {
         return true;
     }
 
-    public static ActiveShip getShip(Player player) {
+    public static ActiveShip getShip(
+            Player player
+    ) {
         if (player == null) {
             return null;
         }
@@ -48,26 +63,9 @@ public class ShipManager {
         );
     }
 
-    /**
-     * Ищет активный корабль по его скрытому Boat carrier.
-     */
-    public static ActiveShip getShip(Boat carrier) {
-        if (carrier == null) {
-            return null;
-        }
-
-        for (ActiveShip ship : activeShips.values()) {
-            if (ship.getCarrier().getUniqueId().equals(
-                    carrier.getUniqueId()
-            )) {
-                return ship;
-            }
-        }
-
-        return null;
-    }
-
-    public static void stopShip(Player player) {
+    public static void stopShip(
+            Player player
+    ) {
         if (player == null) {
             return;
         }
@@ -82,7 +80,13 @@ public class ShipManager {
         }
     }
 
-    public static void stopShip(UUID uuid) {
+    public static void stopShip(
+            UUID uuid
+    ) {
+        if (uuid == null) {
+            return;
+        }
+
         ActiveShip ship =
                 activeShips.remove(uuid);
 
@@ -92,12 +96,14 @@ public class ShipManager {
     }
 
     public static void stopAllShips() {
-        new HashMap<>(activeShips).forEach(
+        new HashMap<>(
+                activeShips
+        ).forEach(
                 (uuid, ship) -> {
                     try {
                         ship.restoreBlocks();
-                    } catch (Exception e) {
-                        e.printStackTrace();
+                    } catch (Exception exception) {
+                        exception.printStackTrace();
                     }
                 }
         );
