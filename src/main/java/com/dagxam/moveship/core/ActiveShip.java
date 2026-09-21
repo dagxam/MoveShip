@@ -463,6 +463,19 @@ public class ActiveShip {
         }
     }
 
+    /**
+     * Немедленно синхронизирует только направление взгляда пилота
+     * с его посадочным root. Курс корабля здесь не используется.
+     */
+    public void updatePilotView(float yaw, float pitch) {
+        if (pilot.getVehicle() != rootEntity) {
+            return;
+        }
+
+        rootEntity.setRotation(yaw, 0.0f);
+        pilot.setRotation(yaw, pitch);
+    }
+
     private void updateSeat() {
         double delta = Math.toRadians(shipYaw - initialYaw);
         double cos = Math.cos(delta);
