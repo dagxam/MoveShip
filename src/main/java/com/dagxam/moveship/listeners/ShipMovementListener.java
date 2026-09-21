@@ -13,6 +13,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDismountEvent;
 import org.bukkit.event.player.PlayerInputEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.vehicle.VehicleMoveEvent;
 
@@ -66,6 +67,24 @@ public class ShipMovementListener implements Listener {
         ship.processCarrierMove(
                 event.getFrom(),
                 event.getTo()
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPilotLook(PlayerMoveEvent event) {
+        ActiveShip ship = ShipManager.getShip(event.getPlayer());
+
+        if (ship == null || event.getTo() == null) {
+            return;
+        }
+
+        /*
+         * Запоминаем только yaw/pitch мыши.
+         * Положение игрока и курс Boat здесь не смешиваются.
+         */
+        ship.setPilotView(
+                event.getTo().getYaw(),
+                event.getTo().getPitch()
         );
     }
 
