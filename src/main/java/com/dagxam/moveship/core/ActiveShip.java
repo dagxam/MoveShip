@@ -80,7 +80,7 @@ public class ActiveShip {
      * Paper позволяет растягивать перемещение Display на несколько тиков
      * через teleportDuration и отдельно сглаживать Transformation.
      */
-    private static final int DISPLAY_TELEPORT_DURATION = 3;
+    private static final int DISPLAY_TELEPORT_DURATION = 1;
     private static final int DISPLAY_INTERPOLATION_DURATION = 2;
 
     private final Player pilot;
@@ -376,6 +376,16 @@ public class ActiveShip {
                                 );
 
                                 /*
+                                 * Один тик interpolation для позиции:
+                                 * новый target приходит каждый server tick,
+                                 * поэтому клиент получает непрерывное
+                                 * движение без трехтиковой задержки.
+                                 *
+                                 * Поворот матрицы отдельно интерполируется
+                                 * двумя тиками ниже.
+                                 */
+
+                                /*
                                  * Отдельно сглаживаем Transformation:
                                  * это касается именно поворота/матрицы корпуса.
                                  *
@@ -448,6 +458,26 @@ public class ActiveShip {
             restoreBlocks();
             return;
         }
+
+        /*
+         * После прошлого тика ArmorStand уже получил velocity и был
+         * перемещен обычной entity-физикой. Используем его фактическую
+         * позицию как источник истины.
+         *
+         * Это принципиально отличается от постоянного teleport() seat-anchor:
+         * пассажир движется вместе с реальным velocity carrier-а, как в
+         * BlockShips, а не получает новый teleport каждый тик.
+         */
+        Location actualHelmLocation =
+                helmAnchor.getLocation();
+
+        anchorCenter =
+                actualHelmLocation.clone()
+                        .subtract(
+                                0.0,
+                                HELM_VERTICAL_OFFSET,
+                                0.0
+                        );
 
         updatePhysics();
 
@@ -564,8 +594,29 @@ public class ActiveShip {
                 0.0f
         );
 
-        helmAnchor.teleport(
-                helmLocation
+        /*
+         * Больше НЕ телепортируем carrier каждый тик.
+         *
+         * Вместо этого передаем ему фактическое смещение за один тик как
+         * velocity в блоках/тик. Paper Entity API задает velocity именно
+         * в этой единице.
+         */
+        Vector carrierVelocity =
+                anchorCenter
+                        .toVector()
+                        .subtract(
+                                actualHelmLocation.toVector()
+                                        .subtract(
+                                                new Vector(
+                                                        0.0,
+                                                        HELM_VERTICAL_OFFSET,
+                                                        0.0
+                                                )
+                                        )
+                        );
+
+        helmAnchor.setVelocity(
+                carrierVelocity
         );
 
         /*
@@ -728,8 +779,9 @@ public class ActiveShip {
              * Matrix меняем каждый tick потому, что внутренний shipYaw
              * является непрерывным float-значением.
              *
-             * Поступательное движение сглаживается клиентским
-             * teleportDuration=3, а поворот корпуса — отдельной
+             * Carrier перемещает корабль через velocity.
+             * Display position сглаживается коротким
+             * teleportDuration=1, а поворот корпуса — отдельной
              * интерполяцией Transformation на 2 тика.
              */
             display.setTransformationMatrix(
