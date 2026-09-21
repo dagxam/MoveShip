@@ -501,123 +501,26 @@ public class ActiveShip {
      * Благодаря этому вращение камеры не вращает корабль и не уводит
      * самого игрока с посадочного места.
      */
+    /**
+     * При использовании настоящей Boat сервер не подменяет позицию пассажира.
+     * Minecraft сама ведет XYZ пассажира через Vehicle.
+     *
+     * Главное: мы не меняем yaw/pitch здесь, поэтому направление головы
+     * остается полностью независимым от курса корабля.
+     */
     public void constrainPilotMove(PlayerMoveEvent event) {
         if (event.getPlayer() != pilot) {
             return;
         }
-
-        Location to = event.getTo();
-        if (to == null) {
-            return;
-        }
-
-        double delta = Math.toRadians(shipYaw - initialYaw);
-        double cos = Math.cos(delta);
-        double sin = Math.sin(delta);
-
-        double seatX = anchorCenter.getX()
-                + seatLocalX * cos
-                - seatLocalZ * sin;
-        double seatY = anchorCenter.getY() + seatLocalY;
-        double seatZ = anchorCenter.getZ()
-                + seatLocalX * sin
-                + seatLocalZ * cos;
-
-        if (Math.abs(to.getX() - seatX) > 0.001
-                || Math.abs(to.getY() - seatY) > 0.001
-                || Math.abs(to.getZ() - seatZ) > 0.001) {
-            Location corrected = to.clone();
-            corrected.setX(seatX);
-            corrected.setY(seatY);
-            corrected.setZ(seatZ);
-            // Yaw и pitch намеренно НЕ меняем: это движение головы мышью.
-            event.setTo(corrected);
-        }
     }
 
     /**
-     * Перемещает игрока к расчетной точке штурвала без использования
-     * vehicle-пассажира.
-     *
-     * XYZ контролируются сервером.
-     * Yaw/Pitch вообще здесь не изменяются — поэтому мышь полностью
-     * независима от курса корабля.
+     * Boat сама удерживает пассажира в своей точке посадки.
      */
     private void updateSeat() {
-        double delta = Math.toRadians(shipYaw - initialYaw);
-        double cos = Math.cos(delta);
-        double sin = Math.sin(delta);
-
-        double seatX =
-                anchorCenter.getX()
-                        + seatLocalX * cos
-                        - seatLocalZ * sin;
-
-        double seatY = anchorCenter.getY() + seatLocalY;
-
-        double seatZ =
-                anchorCenter.getZ()
-                        + seatLocalX * sin
-                        + seatLocalZ * cos;
-
-        Location playerLocation = pilot.getLocation();
-
-        double dx = seatX - playerLocation.getX();
-        double dy = seatY - playerLocation.getY();
-        double dz = seatZ - playerLocation.getZ();
-
-        /*
-         * При нормальном ходе игрок перемещается через velocity.
-         * Это не телепортирует камеру каждый тик.
-         */
-        double errorSquared = dx * dx + dy * dy + dz * dz;
-
-        if (errorSquared > 1.0) {
-            Location corrected = playerLocation.clone();
-            corrected.setX(seatX);
-            corrected.setY(seatY);
-            corrected.setZ(seatZ);
-
-            /*
-             * yaw/pitch намеренно оставляем от текущего игрока.
-             */
-            pilot.teleport(corrected);
-            pilot.setVelocity(new Vector());
-        } else {
-            pilot.setVelocity(new Vector(dx, dy, dz));
-        }
-
         pilot.setFallDistance(0.0f);
-
-        /*
-         * Технический root всегда следует за кораблём.
-         * Игрок на нём не сидит, поэтому root никак не ограничивает взгляд.
-         * Он нужен только как живой технический якорь.
-         */
-        Location rootLocation = rootEntity.getLocation();
-
-        if (Math.abs(rootLocation.getX() - seatX) > 0.01
-                || Math.abs(rootLocation.getY() - seatY) > 0.01
-                || Math.abs(rootLocation.getZ() - seatZ) > 0.01) {
-
-            rootLocation.setX(seatX);
-            rootLocation.setY(seatY);
-            rootLocation.setZ(seatZ);
-            rootLocation.setYaw(0.0f);
-            rootLocation.setPitch(0.0f);
-
-            rootEntity.teleport(rootLocation);
-        }
     }
 
-    /**
-     * Перемещение самого Display делается через штатную teleport-интерполяцию
-     * Minecraft: одна новая позиция сервера на тик -> один интерполируемый
-     * сегмент на клиенте.
-     *
-     * Transformation используется только когда корабль поворачивается.
-     * Поэтому прямой ход не смешивает два разных механизма интерполяции.
-     */
     private void updateDisplays(boolean rotated) {
         double delta = Math.toRadians(shipYaw - initialYaw);
         double cos = Math.cos(delta);
