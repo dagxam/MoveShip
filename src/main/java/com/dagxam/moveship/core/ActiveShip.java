@@ -770,40 +770,6 @@ public class ActiveShip {
                 * response;
     }
 
-    private static int floorToInt(
-            double value
-    ) {
-        return (int) Math.floor(value);
-    }
-
-    private static float norm(
-            float yaw
-    ) {
-        yaw %= 360.0f;
-
-        if (yaw < 0.0f) {
-            yaw += 360.0f;
-        }
-
-        return yaw;
-    }
-
-    private static float normalizeDelta(
-            float delta
-    ) {
-        delta %= 360.0f;
-
-        if (delta > 180.0f) {
-            delta -= 360.0f;
-        }
-
-        if (delta < -180.0f) {
-            delta += 360.0f;
-        }
-
-        return delta;
-    }
-
     private void captureSubmergedWake(Set<Block> blocks) {
         int seaLevel = Integer.MIN_VALUE;
 
@@ -1094,7 +1060,6 @@ public class ActiveShip {
         }
 
         displayEntities.clear();
-        displayLocations.clear();
         displayMatrices.clear();
     }
 
