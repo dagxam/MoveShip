@@ -233,7 +233,7 @@ public class ActiveShip {
 
     private void tick() {
         if (!pilot.isOnline() || !rootEntity.isValid()) {
-            stopInternal();
+            restoreBlocks();
             return;
         }
 
@@ -281,7 +281,7 @@ public class ActiveShip {
         rootTarget.setPitch(0.0f);
 
         if (!rootEntity.teleport(rootTarget)) {
-            stopInternal();
+            restoreBlocks();
             return;
         }
 
