@@ -267,12 +267,10 @@ public class ActiveShip {
          * именно для таких случаев.
          */
         /*
-         * Boat должна оставаться отслеживаемой клиентом-пилотом, иначе
-         * клиент перестает воспринимать player как rider transport.
-         *
-         * Полное визуальное скрытие Boat не решается setVisibleByDefault(false):
-         * это удаляет entity из tracking. Отдельное скрытие модели будет
-         * следующим визуальным слоем.
+         * setInvisible() для Boat не гарантирует скрытие модели в Minecraft.
+         * Поэтому carrier сначала остается обычной отслеживаемой Entity,
+         * а после установки passenger скрывается персонально у наблюдателей
+         * через Player#hideEntity().
          */
         carrier.setInvisible(false);
         carrier.setInvulnerable(true);
@@ -301,6 +299,16 @@ public class ActiveShip {
         }
 
         this.lastCarrierLocation = carrier.getLocation().clone();
+
+        /*
+         * Монтирование уже зарегистрировано на сервере.
+         * Теперь скрываем техническую Boat от клиентов.
+         * Управление больше не зависит от vanilla Boat movement:
+         * PlayerInputEvent -> controlCarrier().
+         */
+        for (Player viewer : anchorLocation.getWorld().getPlayers()) {
+            viewer.hideEntity(plugin, carrier);
+        }
 
         /*
          * Визуальный корпус.
