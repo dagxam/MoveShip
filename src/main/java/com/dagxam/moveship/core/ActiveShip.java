@@ -300,15 +300,6 @@ public class ActiveShip {
 
         this.lastCarrierLocation = carrier.getLocation().clone();
 
-        /*
-         * Монтирование уже зарегистрировано на сервере.
-         * Теперь скрываем техническую Boat от клиентов.
-         * Управление больше не зависит от vanilla Boat movement:
-         * PlayerInputEvent -> controlCarrier().
-         */
-        for (Player viewer : anchorLocation.getWorld().getPlayers()) {
-            viewer.hideEntity(plugin, carrier);
-        }
 
         /*
          * Визуальный корпус.
