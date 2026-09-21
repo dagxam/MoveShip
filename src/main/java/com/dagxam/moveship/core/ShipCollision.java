@@ -23,11 +23,14 @@ public final class ShipCollision {
     private static final double EPSILON = 1.0E-7;
 
     private final List<LocalBox> localBoxes;
+    private final float referenceYaw;
 
     public ShipCollision(
             Iterable<ShipBlockData> blocks,
-            Location anchorCenter
+            Location anchorCenter,
+            float referenceYaw
     ) {
+        this.referenceYaw = referenceYaw;
         if (anchorCenter == null || anchorCenter.getWorld() == null) {
             throw new IllegalArgumentException(
                     "Для collision-модели нужен мир"
@@ -213,8 +216,13 @@ public final class ShipCollision {
             return false;
         }
 
+        double relativeYaw =
+                normalizeDelta(
+                        yaw - referenceYaw
+                );
+
         double radians =
-                Math.toRadians(yaw);
+                Math.toRadians(relativeYaw);
 
         double cos =
                 Math.cos(radians);
