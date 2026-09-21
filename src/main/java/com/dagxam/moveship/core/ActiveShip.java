@@ -301,7 +301,7 @@ public class ActiveShip {
                          */
                         entity.setDisplayWidth(0.0f);
                         entity.setDisplayHeight(0.0f);
-                        entity.setViewRange(8.0f);
+                        entity.setViewRange(64.0f);
 
                         entity.setInterpolationDelay(0);
                         entity.setInterpolationDuration(DISPLAY_INTERPOLATION_TICKS);
