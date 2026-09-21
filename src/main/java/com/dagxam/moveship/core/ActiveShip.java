@@ -18,6 +18,7 @@ import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 import org.joml.Matrix4f;
@@ -55,7 +56,8 @@ public class ActiveShip {
      */
     private static final double MAX_FWD = 0.40;
     private static final double MAX_BACK = 0.15;
-    private static final double SPEED_RESPONSE = 0.16;
+    private static final double SPEED_RESPONSE = 0.22;
+    private static final double BRAKE_RESPONSE = 0.18;
 
     /*
      * Угловая скорость в градусах за тик.
@@ -253,7 +255,7 @@ public class ActiveShip {
                     entity -> {
                         entity.setBlock(block.getBlockData().clone());
                         entity.setPersistent(false);
-                        entity.setTeleportDuration(1);
+                        entity.setTeleportDuration(2);
                         entity.setInterpolationDelay(0);
                         entity.setInterpolationDuration(1);
                     }
@@ -382,7 +384,9 @@ public class ActiveShip {
         currentSpeed = approach(
                 currentSpeed,
                 targetSpeed,
-                SPEED_RESPONSE
+                Math.abs(targetSpeed) < Math.abs(currentSpeed)
+                        ? BRAKE_RESPONSE
+                        : SPEED_RESPONSE
         );
 
         float targetTurn = 0.0f;
@@ -418,6 +422,47 @@ public class ActiveShip {
      * Игрок не переводится в world-coordinate напрямую:
      * сначала поворачиваем его локальный offset вокруг anchorCenter.
      */
+    /**
+     * Жестко удерживает XYZ пилота на рассчитанной точке штурвала,
+     * но полностью сохраняет yaw/pitch, пришедшие от мыши.
+     *
+     * Благодаря этому вращение камеры не вращает корабль и не уводит
+     * самого игрока с посадочного места.
+     */
+    public void constrainPilotMove(PlayerMoveEvent event) {
+        if (event.getPlayer() != pilot || pilot.getVehicle() != rootEntity) {
+            return;
+        }
+
+        Location to = event.getTo();
+        if (to == null) {
+            return;
+        }
+
+        double delta = Math.toRadians(shipYaw - initialYaw);
+        double cos = Math.cos(delta);
+        double sin = Math.sin(delta);
+
+        double seatX = anchorCenter.getX()
+                + seatLocalX * cos
+                - seatLocalZ * sin;
+        double seatY = anchorCenter.getY() + seatLocalY;
+        double seatZ = anchorCenter.getZ()
+                + seatLocalX * sin
+                + seatLocalZ * cos;
+
+        if (Math.abs(to.getX() - seatX) > 0.001
+                || Math.abs(to.getY() - seatY) > 0.001
+                || Math.abs(to.getZ() - seatZ) > 0.001) {
+            Location corrected = to.clone();
+            corrected.setX(seatX);
+            corrected.setY(seatY);
+            corrected.setZ(seatZ);
+            // Yaw и pitch намеренно НЕ меняем: это движение головы мышью.
+            event.setTo(corrected);
+        }
+    }
+
     private void updateSeat() {
         double delta = Math.toRadians(shipYaw - initialYaw);
         double cos = Math.cos(delta);
@@ -533,7 +578,7 @@ public class ActiveShip {
                         .translate(-0.5f, -0.5f, -0.5f);
 
                 display.setInterpolationDelay(0);
-                display.setInterpolationDuration(1);
+                display.setInterpolationDuration(2);
                 display.setTransformationMatrix(matrix);
             }
         }
