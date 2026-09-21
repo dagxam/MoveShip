@@ -257,37 +257,31 @@ public class ActiveShip {
         fillInitialWater();
 
         /*
-         * Root только для посадки игрока.
-         * Marker ArmorStand не имеет обычной видимой геометрии/хитбокса.
-         * Он всегда смотрит на yaw=0 и не вращается вместе с кораблем.
+         * Настоящая скрытая Boat используется как физический carrier.
+         * Ее стандартный маленький hitbox не является коллизией корабля —
+         * collision проверяется отдельно через ShipCollisionModel.
          */
-        this.rootEntity = anchorLocation.getWorld().spawn(
+        this.rootEntity = (Boat) anchorLocation.getWorld().spawnEntity(
                 pilotStart,
-                ArmorStand.class,
-                entity -> {
-                    entity.setInvisible(true);
-                    entity.setInvulnerable(true);
-                    entity.setGravity(false);
-                    entity.setMarker(true);
-                    entity.setSmall(true);
-                    entity.setBasePlate(false);
-                    entity.setPersistent(false);
-                    entity.setSilent(true);
-                    entity.setRotation(0.0f, 0.0f);
-                }
+                EntityType.OAK_BOAT
         );
 
-        /*
-         * Игрок больше НЕ является пассажиром rootEntity.
-         *
-         * Это принципиально для Minecraft 26.3:
-         * vehicle может участвовать в синхронизации yaw пассажира,
-         * из-за чего курс корабля начинает влиять на взгляд.
-         *
-         * Вместо этого сервер удерживает только XYZ игрока на штурвале,
-         * а yaw/pitch полностью принадлежат игроку и мыши.
-         */
-        pilot.setGravity(false);
+        rootEntity.setInvisible(true);
+        rootEntity.setInvulnerable(true);
+        rootEntity.setPersistent(false);
+        rootEntity.setSilent(true);
+        rootEntity.setGravity(true);
+        rootEntity.setRotation(shipYaw, 0.0f);
+        rootEntity.setMaxSpeed(MAX_FWD);
+        rootEntity.setWorkOnLand(false);
+
+        if (!rootEntity.addPassenger(pilot)) {
+            rootEntity.remove();
+            throw new IllegalStateException(
+                    "Не удалось посадить пилота в техническую лодку"
+            );
+        }
+
         pilot.setFallDistance(0.0f);
         pilot.setVelocity(new Vector());
 
