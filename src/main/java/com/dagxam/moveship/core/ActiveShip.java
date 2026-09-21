@@ -785,14 +785,32 @@ public class ActiveShip {
         ) < 0.000001;
     }
 
-    private static double approach(
+    private static double moveTowards(
             double current,
             double target,
-            double response
+            double maxStep
     ) {
-        return current
-                + (target - current)
-                * response;
+        double delta = target - current;
+
+        if (Math.abs(delta) <= maxStep) {
+            return target;
+        }
+
+        return current + Math.copySign(maxStep, delta);
+    }
+
+    private static float moveTowards(
+            float current,
+            float target,
+            float maxStep
+    ) {
+        float delta = target - current;
+
+        if (Math.abs(delta) <= maxStep) {
+            return target;
+        }
+
+        return current + Math.copySign(maxStep, delta);
     }
 
     /**
@@ -803,7 +821,7 @@ public class ActiveShip {
      *
      * Directional BlockFace переводится напрямую в эту систему координат.
      */
-    private static float getControllerYaw(
+    private static float resolveControllerYaw(
             Location controllerLocation,
             float fallbackYaw
     ) {
