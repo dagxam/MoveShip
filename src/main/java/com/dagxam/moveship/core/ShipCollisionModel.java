@@ -50,6 +50,67 @@ public final class ShipCollisionModel {
     }
 
     /**
+     * Полная swept-проверка движения и поворота между двумя состояниями.
+     */
+    public boolean collidesBetweenTransforms(
+            World world,
+            Location fromCenter,
+            float fromYaw,
+            Location toCenter,
+            float toYaw
+    ) {
+        double dx = toCenter.getX() - fromCenter.getX();
+        double dy = toCenter.getY() - fromCenter.getY();
+        double dz = toCenter.getZ() - fromCenter.getZ();
+
+        double distance = Math.sqrt(
+                dx * dx + dy * dy + dz * dz
+        );
+
+        float angle = normalizeDelta(
+                toYaw - fromYaw
+        );
+
+        int movementSteps =
+                (int) Math.ceil(distance / 0.25);
+
+        int rotationSteps =
+                (int) Math.ceil(Math.abs(angle) / 2.0);
+
+        int steps = Math.max(
+                1,
+                Math.max(
+                        movementSteps,
+                        rotationSteps
+                )
+        );
+
+        for (int i = 1; i <= steps; i++) {
+            double t = (double) i / steps;
+
+            Location center = fromCenter.clone();
+            center.add(
+                    dx * t,
+                    dy * t,
+                    dz * t
+            );
+
+            float yaw =
+                    fromYaw + angle * (float) t;
+
+            if (collides(
+                    world,
+                    center,
+                    yaw
+            )) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Проверяет всю форму корабля в заданной позиции и с заданным yaw.
      */
     public boolean collides(
@@ -185,13 +246,17 @@ public final class ShipCollisionModel {
                      * Воздух, вода и прочие блоки без collision shape
                      * автоматически дают пустую форму.
                      */
-                    if (!block.getType().hasCollision()) {
+                    if (block.getType().isAir()) {
                         continue;
                     }
 
-                    if (block.getCollisionShape().overlaps(
-                            query.expand(EPSILON)
-                    )) {
+                    if (block.getCollisionShape().getBoundingBoxes().isEmpty()) {
+                        continue;
+                    }
+
+                    BoundingBox expanded = query.clone().expand(EPSILON);
+
+                    if (block.getCollisionShape().overlaps(expanded)) {
                         return true;
                     }
                 }
@@ -199,6 +264,18 @@ public final class ShipCollisionModel {
         }
 
         return false;
+    }
+
+    private static float normalizeDelta(float delta) {
+        delta %= 360.0f;
+
+        if (delta > 180.0f) {
+            delta -= 360.0f;
+        } else if (delta < -180.0f) {
+            delta += 360.0f;
+        }
+
+        return delta;
     }
 
     private static int floor(double value) {
