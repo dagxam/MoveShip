@@ -56,8 +56,8 @@ public class ActiveShip {
      */
     private static final double MAX_FWD = 0.40;
     private static final double MAX_BACK = 0.15;
-    private static final double SPEED_RESPONSE = 0.22;
-    private static final double BRAKE_RESPONSE = 0.18;
+    private static final double SPEED_RESPONSE = 0.10;
+    private static final double BRAKE_RESPONSE = 0.12;
 
     /*
      * Угловая скорость в градусах за тик.
@@ -288,7 +288,7 @@ public class ActiveShip {
                     entity -> {
                         entity.setBlock(block.getBlockData().clone());
                         entity.setPersistent(false);
-                        entity.setTeleportDuration(0);
+                        entity.setTeleportDuration(1);
 
                         /*
                          * Отключаем culling самого Display.
@@ -580,14 +580,12 @@ public class ActiveShip {
     }
 
     /**
-     * Плавное визуальное движение через Transformation.
+     * Перемещение самого Display делается через штатную teleport-интерполяцию
+     * Minecraft: одна новая позиция сервера на тик -> один интерполируемый
+     * сегмент на клиенте.
      *
-     * Display Entity не телепортируется каждый тик. Его исходная мировая
-     * позиция используется как стабильная база, а актуальное перемещение
-     * корабля задается translation в матрице.
-     *
-     * Culling отключен через width/height=0, поэтому большая Translation
-     * не приводит к исчезновению модели.
+     * Transformation используется только когда корабль поворачивается.
+     * Поэтому прямой ход не смешивает два разных механизма интерполяции.
      */
     private void updateDisplays(boolean rotated) {
         double delta = Math.toRadians(shipYaw - initialYaw);
@@ -603,6 +601,7 @@ public class ActiveShip {
             }
 
             ShipBlockData block = originalBlocks.get(i);
+            Location target = displayLocations.get(i);
 
             double centerX =
                     anchorCenter.getX()
@@ -619,66 +618,31 @@ public class ActiveShip {
                             + block.getLocalX() * sin
                             + block.getLocalZ() * cos;
 
-            double currentCornerX = centerX - 0.5;
-            double currentCornerY = centerY - 0.5;
-            double currentCornerZ = centerZ - 0.5;
-
-            Location base = displayLocations.get(i);
-
             /*
-             * Пока корабль находится недалеко от исходной позиции entity,
-             * можем полностью отказаться от teleport().
-             *
-             * При дальнем ходе recenter нужен только для server-side entity
-             * tracking. Визуальная мировая координата сохраняется за счет
-             * компенсационной Transformation.
+             * Позиция Display — центр блока минус половина размера.
+             * teleportDuration=1 сглаживает этот переход на клиенте.
              */
-            if (base.distanceSquared(
-                    new Location(
-                            anchorCenter.getWorld(),
-                            currentCornerX,
-                            currentCornerY,
-                            currentCornerZ
-                    )
-            ) > DISPLAY_RECENTER_DISTANCE_SQUARED) {
+            target.setX(centerX - 0.5);
+            target.setY(centerY - 0.5);
+            target.setZ(centerZ - 0.5);
+            target.setYaw(0.0f);
+            target.setPitch(0.0f);
 
-                base.setX(currentCornerX);
-                base.setY(currentCornerY);
-                base.setZ(currentCornerZ);
+            display.setTeleportDuration(1);
+            display.teleport(target);
 
-                display.teleport(base);
+            if (rotated) {
+                Matrix4f matrix = displayMatrices.get(i);
+
+                matrix.identity()
+                        .translate(0.5f, 0.5f, 0.5f)
+                        .rotateY(rotation)
+                        .translate(-0.5f, -0.5f, -0.5f);
+
+                display.setInterpolationDelay(0);
+                display.setInterpolationDuration(1);
+                display.setTransformationMatrix(matrix);
             }
-
-            float tx = (float) (currentCornerX - base.getX());
-            float ty = (float) (currentCornerY - base.getY());
-            float tz = (float) (currentCornerZ - base.getZ());
-
-            Matrix4f matrix = displayMatrices.get(i);
-
-            /*
-             * Сначала переводим куб от entity origin в его текущую мировую
-             * позицию, затем вращаем вокруг центра самого куба.
-             */
-            matrix.identity()
-                    .translate(
-                            tx + 0.5f,
-                            ty + 0.5f,
-                            tz + 0.5f
-                    )
-                    .rotateY(rotation)
-                    .translate(
-                            -0.5f,
-                            -0.5f,
-                            -0.5f
-                    );
-
-            /*
-             * Rotation и translation входят в один набор interpolated-полей
-             * Display Entity. Обновляем их одним вызовом.
-             */
-            display.setInterpolationDelay(0);
-            display.setInterpolationDuration(DISPLAY_INTERPOLATION_TICKS);
-            display.setTransformationMatrix(matrix);
         }
     }
 
