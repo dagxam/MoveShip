@@ -795,6 +795,44 @@ public class ActiveShip {
                 * response;
     }
 
+    /**
+     * Возвращает yaw направления, куда смотрит установленная кафедра.
+     *
+     * Minecraft yaw:
+     * SOUTH = 0, WEST = 90, NORTH = 180, EAST = -90.
+     *
+     * Directional BlockFace переводится напрямую в эту систему координат.
+     */
+    private static float getControllerYaw(
+            Location controllerLocation,
+            float fallbackYaw
+    ) {
+        if (controllerLocation != null) {
+            BlockData data =
+                    controllerLocation.getBlock()
+                            .getBlockData();
+
+            if (data instanceof Directional directional) {
+                BlockFace facing =
+                        directional.getFacing();
+
+                if (facing.getModX() != 0
+                        || facing.getModZ() != 0) {
+                    return norm(
+                            (float) Math.toDegrees(
+                                    Math.atan2(
+                                            -facing.getModX(),
+                                            facing.getModZ()
+                                    )
+                            )
+                    );
+                }
+            }
+        }
+
+        return norm(fallbackYaw);
+    }
+
     private void captureSubmergedWake(Set<Block> blocks) {
         int seaLevel = Integer.MIN_VALUE;
 
