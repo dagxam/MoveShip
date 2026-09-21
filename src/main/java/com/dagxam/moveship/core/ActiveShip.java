@@ -484,9 +484,6 @@ public class ActiveShip {
         Location oldCenter =
                 anchorCenter.clone();
 
-        float oldYaw =
-                shipYaw;
-
         double speed =
                 currentSpeed;
 
