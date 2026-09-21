@@ -81,7 +81,7 @@ public class ActiveShip {
      * через teleportDuration и отдельно сглаживать Transformation.
      */
     private static final int DISPLAY_TELEPORT_DURATION = 3;
-    private static final int DISPLAY_INTERPOLATION_DURATION = 0;
+    private static final int DISPLAY_INTERPOLATION_DURATION = 2;
 
     private final Player pilot;
     private final MoveShipPlugin plugin;
@@ -375,7 +375,15 @@ public class ActiveShip {
                                         DISPLAY_TELEPORT_DURATION
                                 );
 
-                                entity.setInterpolationDelay(-1);
+                                /*
+                                 * Отдельно сглаживаем Transformation:
+                                 * это касается именно поворота/матрицы корпуса.
+                                 *
+                                 * В Paper teleportDuration и interpolationDuration
+                                 * являются разными механизмами клиентской
+                                 * интерполяции.
+                                 */
+                                entity.setInterpolationDelay(0);
                                 entity.setInterpolationDuration(
                                         DISPLAY_INTERPOLATION_DURATION
                                 );
@@ -721,7 +729,8 @@ public class ActiveShip {
              * является непрерывным float-значением.
              *
              * Поступательное движение сглаживается клиентским
-             * teleportDuration=3, а матрица корпуса обновляется отдельно.
+             * teleportDuration=3, а поворот корпуса — отдельной
+             * интерполяцией Transformation на 2 тика.
              */
             display.setTransformationMatrix(
                     matrix
