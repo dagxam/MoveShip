@@ -15,7 +15,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: ☕ Настройка Java 26 (Temurin)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '26'
           distribution: 'temurin'
