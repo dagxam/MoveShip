@@ -440,7 +440,13 @@ public final class ShipCollision {
                                     z
                             );
 
-                    if (block.getType().isAir()) {
+                    /*
+                     * Вода и другие жидкости не являются препятствием
+                     * для корабля. Корабль должен взаимодействовать с водой
+                     * как со средой плавания, а не как с твердой коллизией.
+                     */
+                    if (block.getType().isAir()
+                            || block.isLiquid()) {
                         continue;
                     }
 
