@@ -4,6 +4,7 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Tag;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
 
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -27,21 +28,22 @@ public class ShipScanner {
             Block current = queue.poll();
             shipBlocks.add(current);
 
-            for (int x = -1; x <= 1; x++) {
-                for (int y = -1; y <= 1; y++) {
-                    for (int z = -1; z <= 1; z++) {
-                        if (x == 0 && y == 0 && z == 0) continue;
+            for (BlockFace face : new BlockFace[]{
+                    BlockFace.NORTH,
+                    BlockFace.SOUTH,
+                    BlockFace.EAST,
+                    BlockFace.WEST,
+                    BlockFace.UP,
+                    BlockFace.DOWN
+            }) {
+                Block neighbor = current.getRelative(face);
+                Location neighborLoc = neighbor.getLocation();
 
-                        Block neighbor = current.getRelative(x, y, z);
-                        Location neighborLoc = neighbor.getLocation();
+                if (!visited.contains(neighborLoc)) {
+                    visited.add(neighborLoc);
 
-                        if (!visited.contains(neighborLoc)) {
-                            visited.add(neighborLoc);
-
-                            if (isValidShipBlock(neighbor.getType())) {
-                                queue.add(neighbor);
-                            }
-                        }
+                    if (isValidShipBlock(neighbor)) {
+                        queue.add(neighbor);
                     }
                 }
             }
@@ -50,7 +52,35 @@ public class ShipScanner {
         return shipBlocks;
     }
 
-    private static boolean isValidShipBlock(Material type) {
+    private static boolean isValidShipBlock(Block block) {
+        Material type = block.getType();
+
+        if (type.isAir()) {
+            return false;
+        }
+
+        /*
+         * Любой твердый строительный блок автоматически является частью
+         * корабля. Это убирает зависимость от постоянно меняющегося списка
+         * Material и сохраняет новые декоративные блоки Paper/Minecraft.
+         */
+        if (type.isSolid()) {
+            return true;
+        }
+
+        /*
+         * Все светящиеся блоки (фонари, факелы, лампы, медные лампы/бульбы,
+         * светящиеся блоки и т.д.) должны сканироваться независимо от того,
+         * как называется конкретный Material.
+         */
+        try {
+            if (block.getBlockData().getLightEmission() > 0) {
+                return true;
+            }
+        } catch (Exception ignored) {
+            // Некоторые нестандартные Material могут не иметь BlockData.
+        }
+
         // 1. Базовые строительные материалы (дерево)
         if (Tag.PLANKS.isTagged(type)) return true;
         if (Tag.LOGS.isTagged(type)) return true;
@@ -96,8 +126,8 @@ public class ShipScanner {
             case BELL:
             case BOOKSHELF:
             case CHISELED_BOOKSHELF:
-            case LADDER: // <---- ИСПРАВЛЕНИЕ: Добавлена настенная лестница
-            case VINE:   // Заодно добавил лианы, если захотите декоративные паруса или заросли
+            case LADDER:
+            case VINE:
             // Механизмы
             case LEVER:
             case DAYLIGHT_DETECTOR:
