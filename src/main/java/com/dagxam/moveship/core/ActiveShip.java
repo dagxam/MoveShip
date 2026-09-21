@@ -289,8 +289,22 @@ public class ActiveShip {
                         entity.setBlock(block.getBlockData().clone());
                         entity.setPersistent(false);
                         entity.setTeleportDuration(0);
+
+                        /*
+                         * Отключаем culling самого Display.
+                         *
+                         * В Minecraft width=0 или height=0 отключает culling
+                         * по bounding box. Это необходимо, поскольку модель
+                         * корабля перемещается через Transformation, а Entity
+                         * position может оставаться на прежней опорной точке
+                         * до редкого recenter.
+                         */
+                        entity.setDisplayWidth(0.0f);
+                        entity.setDisplayHeight(0.0f);
+                        entity.setViewRange(8.0f);
+
                         entity.setInterpolationDelay(0);
-                        entity.setInterpolationDuration(3);
+                        entity.setInterpolationDuration(DISPLAY_INTERPOLATION_TICKS);
                     }
             );
 
@@ -387,7 +401,7 @@ public class ActiveShip {
          */
         renderTickCounter++;
 
-        if (renderTickCounter >= DISPLAY_INTERPOLATION_TICKS || moved) {
+        if (renderTickCounter >= DISPLAY_INTERPOLATION_TICKS) {
             renderTickCounter = 0;
             updateDisplays(rotated);
         }
