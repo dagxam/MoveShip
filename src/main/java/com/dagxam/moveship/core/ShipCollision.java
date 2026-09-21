@@ -185,6 +185,48 @@ public final class ShipCollision {
         return false;
     }
 
+    /**
+     * Полная swept-проверка перехода от старого состояния корабля
+     * к новому: одновременно учитываются перемещение и поворот.
+     */
+    public boolean collidesBetweenTransforms(
+            World world,
+            Location fromCenter,
+            float fromYaw,
+            Location toCenter,
+            float toYaw
+    ) {
+        double dx = toCenter.getX() - fromCenter.getX();
+        double dy = toCenter.getY() - fromCenter.getY();
+        double dz = toCenter.getZ() - fromCenter.getZ();
+        double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+        float angle = normalizeDelta(toYaw - fromYaw);
+
+        int movementSteps = (int) Math.ceil(distance / 0.25);
+        int rotationSteps = (int) Math.ceil(Math.abs(angle) / 2.0);
+        int steps = Math.max(1, Math.max(movementSteps, rotationSteps));
+
+        for (int i = 1; i <= steps; i++) {
+            double t = (double) i / steps;
+
+            Location sampleCenter = fromCenter.clone();
+            sampleCenter.add(
+                    dx * t,
+                    dy * t,
+                    dz * t
+            );
+
+            float sampleYaw = fromYaw + angle * (float) t;
+
+            if (collides(world, sampleCenter, sampleYaw)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public int getCollisionBoxCount() {
         return boxes.size();
     }
