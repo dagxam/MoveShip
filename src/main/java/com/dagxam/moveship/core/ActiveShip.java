@@ -223,7 +223,7 @@ public class ActiveShip {
          * Матрица имеет interpolationDuration=1 для плавного поворота самого блока.
          */
         for (ShipBlockData block : originalBlocks) {
-            Location initialLocation = blockWorldLocation(block, anchorCenter, shipYaw);
+            Location initialLocation = blockWorldLocation(block, anchorCenter, 0.0f);
             Matrix4f matrix = createBlockMatrix(0.0f);
 
             BlockDisplay display = anchorLocation.getWorld().spawn(
@@ -500,9 +500,9 @@ public class ActiveShip {
     private static Location blockWorldLocation(
             ShipBlockData block,
             Location anchor,
-            float yaw
+            float deltaDegrees
     ) {
-        double delta = Math.toRadians(yaw);
+        double delta = Math.toRadians(deltaDegrees);
         double cos = Math.cos(delta);
         double sin = Math.sin(delta);
 
