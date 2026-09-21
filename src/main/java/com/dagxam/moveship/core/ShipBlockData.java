@@ -20,6 +20,9 @@ public final class ShipBlockData {
     private final BlockData blockData;
     private final BlockState stateSnapshot;
 
+    /**
+     * Создает полный снимок блока, который используется ядром движения.
+     */
     public ShipBlockData(
             int localX,
             int localY,
