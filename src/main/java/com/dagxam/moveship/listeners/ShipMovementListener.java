@@ -6,56 +6,84 @@ import com.dagxam.moveship.core.ShipManager;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Input;
+import org.bukkit.entity.Boat;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDismountEvent;
 import org.bukkit.event.player.PlayerInputEvent;
-import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.vehicle.VehicleMoveEvent;
 
 public class ShipMovementListener implements Listener {
 
     public ShipMovementListener(MoveShipPlugin plugin) {
     }
 
+    /**
+     * Сохраняем получение input-события Paper для совместимости с текущим
+     * слоем управления. Фактическое движение теперь выполняет сама Boat.
+     */
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerInput(PlayerInputEvent event) {
         Player player = event.getPlayer();
         ActiveShip ship = ShipManager.getShip(player);
-        if (ship == null) return;
+
+        if (ship == null) {
+            return;
+        }
 
         Input input = event.getInput();
 
         ship.setInput(
-            input.isForward(),
-            input.isBackward(),
-            input.isLeft(),
-            input.isRight()
+                input.isForward(),
+                input.isBackward(),
+                input.isLeft(),
+                input.isRight()
         );
     }
 
     /**
-     * Во время управления кораблем игрок не может физически сместиться
-     * с точки штурвала. yaw/pitch из события сохраняются, поэтому мышь
-     * продолжает свободно вращать голову.
+     * Настоящий источник движения активного корабля.
+     *
+     * Boat получает штатное движение Minecraft, а наш ActiveShip
+     * превращает новую позицию Boat в новую позицию построенного корабля
+     * после проверки его полной collision-модели.
      */
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-    public void onPlayerMove(PlayerMoveEvent event) {
-        ActiveShip ship = ShipManager.getShip(event.getPlayer());
-        if (ship == null) return;
-        ship.constrainPilotMove(event);
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onVehicleMove(VehicleMoveEvent event) {
+        if (!(event.getVehicle() instanceof Boat boat)) {
+            return;
+        }
+
+        ActiveShip ship = ShipManager.getShip(boat);
+
+        if (ship == null) {
+            return;
+        }
+
+        ship.processCarrierMove(
+                event.getFrom(),
+                event.getTo()
+        );
     }
 
     @EventHandler
     public void onDismount(EntityDismountEvent event) {
-        if (!(event.getEntity() instanceof Player player)) return;
+        if (!(event.getEntity() instanceof Player player)) {
+            return;
+        }
+
         if (ShipManager.getShip(player) != null) {
             ShipManager.stopShip(player);
-            player.sendMessage(Component.text(
-                "Вы покинули штурвал. Корабль зафиксирован.",
-                NamedTextColor.YELLOW));
+
+            player.sendMessage(
+                    Component.text(
+                            "Вы покинули штурвал. Корабль зафиксирован.",
+                            NamedTextColor.YELLOW
+                    )
+            );
         }
     }
 
