@@ -59,22 +59,29 @@ public class ActiveShip {
     private static final double MAX_FORWARD_SPEED = 0.25;
     private static final double MAX_REVERSE_SPEED = 0.125;
 
-    private static final double ACCELERATION_RESPONSE = 0.12;
-    private static final double BRAKE_RESPONSE = 0.20;
+    /*
+     * Плавная физика без резкого скачка скорости:
+     * ускорение и торможение идут небольшими фиксированными шагами.
+     */
+    private static final double SPEED_ACCELERATION = 0.015;
+    private static final double SPEED_DECELERATION = 0.020;
 
     /*
      * Внутренняя угловая скорость.
      * Она не записывается в yaw ArmorStand.
      */
-    private static final float MAX_TURN_SPEED = 2.0f;
-    private static final float TURN_ACCELERATION_RESPONSE = 0.14f;
-    private static final float TURN_BRAKE_RESPONSE = 0.20f;
+    private static final float MAX_TURN_SPEED = 1.50f;
+    private static final float TURN_ACCELERATION = 0.10f;
+    private static final float TURN_DECELERATION = 0.14f;
 
     /*
-     * SimpleShips использует 3 тика для teleport interpolation Display.
-     * Это заметно мягче одиночной телепортации каждый тик.
+     * Увеличенная клиентская интерполяция.
+     *
+     * Paper позволяет растягивать перемещение Display на несколько тиков
+     * через teleportDuration и отдельно сглаживать Transformation.
      */
-    private static final int DISPLAY_TELEPORT_DURATION = 3;
+    private static final int DISPLAY_TELEPORT_DURATION = 4;
+    private static final int DISPLAY_INTERPOLATION_DURATION = 2;
 
     private final Player pilot;
     private final MoveShipPlugin plugin;
@@ -201,10 +208,23 @@ public class ActiveShip {
                 0.0
         );
 
-        float pilotYaw =
-                pilot.getLocation().getYaw();
+        /*
+         * Направление корабля определяется лицевой стороной блока управления.
+         *
+         * Это принципиально важно: W должен вести корабль туда, куда
+         * «смотрит» установленная кафедра управления, а не в сторону,
+         * куда в момент активации повернут игрок.
+         *
+         * Если по какой-то причине блок управления не directional,
+         * используем направление игрока как fallback.
+         */
+        float controllerYaw =
+                resolveControllerYaw(
+                        anchorLocation,
+                        pilot.getLocation().getYaw()
+                );
 
-        this.shipYaw = norm(pilotYaw);
+        this.shipYaw = norm(controllerYaw);
         this.initialYaw = this.shipYaw;
 
         /*
@@ -355,8 +375,10 @@ public class ActiveShip {
                                         DISPLAY_TELEPORT_DURATION
                                 );
 
-                                entity.setInterpolationDelay(-1);
-                                entity.setInterpolationDuration(0);
+                                entity.setInterpolationDelay(0);
+                                entity.setInterpolationDuration(
+                                        DISPLAY_INTERPOLATION_DURATION
+                                );
 
                                 /*
                                  * Большой корабль не должен исчезать при
@@ -575,17 +597,16 @@ public class ActiveShip {
                     -MAX_REVERSE_SPEED;
         }
 
-        double response =
-                Math.abs(targetSpeed)
-                        < Math.abs(currentSpeed)
-                        ? BRAKE_RESPONSE
-                        : ACCELERATION_RESPONSE;
+        double speedStep =
+                Math.abs(targetSpeed) < Math.abs(currentSpeed)
+                        ? SPEED_DECELERATION
+                        : SPEED_ACCELERATION;
 
         currentSpeed =
-                approach(
+                moveTowards(
                         currentSpeed,
                         targetSpeed,
-                        response
+                        speedStep
                 );
 
         if (Math.abs(currentSpeed)
@@ -606,17 +627,17 @@ public class ActiveShip {
                     MAX_TURN_SPEED;
         }
 
-        double turnResponse =
+        float turnStep =
                 Math.abs(targetTurn)
                         < Math.abs(currentTurn)
-                        ? TURN_BRAKE_RESPONSE
-                        : TURN_ACCELERATION_RESPONSE;
+                        ? TURN_DECELERATION
+                        : TURN_ACCELERATION;
 
         currentTurn =
-                (float) approach(
+                (float) moveTowards(
                         currentTurn,
                         targetTurn,
-                        turnResponse
+                        turnStep
                 );
 
         if (Math.abs(currentTurn)
@@ -707,10 +728,14 @@ public class ActiveShip {
              * плавность поступательного движения дает teleportDuration=3,
              * а rotation становится плавным за счет малого currentTurn.
              */
-            if (rotated) {
-                display.setInterpolationDelay(-1);
-                display.setInterpolationDuration(0);
-            }
+            /*
+             * Transformation интерполируется отдельно от teleport.
+             * Это сглаживает именно поворот корпуса.
+             */
+            display.setInterpolationDelay(0);
+            display.setInterpolationDuration(
+                    DISPLAY_INTERPOLATION_DURATION
+            );
 
             display.setTransformationMatrix(
                     matrix
