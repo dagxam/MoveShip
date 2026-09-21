@@ -80,7 +80,7 @@ public class ActiveShip {
      * Paper позволяет растягивать перемещение Display на несколько тиков
      * через teleportDuration и отдельно сглаживать Transformation.
      */
-    private static final int DISPLAY_TELEPORT_DURATION = 4;
+    private static final int DISPLAY_TELEPORT_DURATION = 3;
     private static final int DISPLAY_INTERPOLATION_DURATION = 0;
 
     private final Player pilot;
@@ -375,7 +375,7 @@ public class ActiveShip {
                                         DISPLAY_TELEPORT_DURATION
                                 );
 
-                                entity.setInterpolationDelay(0);
+                                entity.setInterpolationDelay(-1);
                                 entity.setInterpolationDuration(
                                         DISPLAY_INTERPOLATION_DURATION
                                 );
@@ -453,32 +453,29 @@ public class ActiveShip {
                 currentSpeed;
 
         /*
-         * Направление вперед определяется курсом корабля,
-         * а не направлением взгляда игрока.
+         * Сначала вычисляем новый курс, затем по нему строим движение.
+         *
+         * Раньше позиция считалась по старому shipYaw, а корпус в том же
+         * тике уже разворачивался на desiredYaw. Из-за этого при W + A/D
+         * корпус визуально поворачивал раньше точки движения и корабль
+         * начинал "ехать боком".
+         *
+         * Теперь один тик движения является частью плавной дуги поворота:
+         * корабль одновременно меняет курс и проходит соответствующий
+         * участок траектории.
          */
-        double yawRadians =
-                Math.toRadians(shipYaw);
-
-        Vector direction =
-                new Vector(
-                        -Math.sin(yawRadians),
-                        0.0,
-                        Math.cos(yawRadians)
-                );
-
-        Location desiredCenter =
-                anchorCenter.clone();
-
-        if (Math.abs(speed) > 0.00001) {
-            desiredCenter.add(
-                    direction.multiply(speed)
-            );
-        }
-
         float desiredYaw =
                 norm(
                         shipYaw
                                 + currentTurn
+                );
+
+        Location desiredCenter =
+                calculateNextCenter(
+                        anchorCenter,
+                        shipYaw,
+                        desiredYaw,
+                        speed
                 );
 
         boolean wantsMove =
@@ -678,12 +675,11 @@ public class ActiveShip {
 
             /*
              * Один общий teleport target для всего корабля.
-             * Именно эта схема используется SimpleShips.
+             *
+             * teleportDuration и параметры interpolation задаются один раз
+             * при создании Display. В каждом тике меняется только сама
+             * позиция/матрица, без лишних metadata-update пакетов.
              */
-            display.setTeleportDuration(
-                    DISPLAY_TELEPORT_DURATION
-            );
-
             display.teleport(
                     helmLocation
             );
@@ -721,27 +717,12 @@ public class ActiveShip {
             );
 
             /*
-             * Matrix меняем каждый tick потому, что внутренний currentYaw
+             * Matrix меняем каждый tick потому, что внутренний shipYaw
              * является непрерывным float-значением.
              *
-             * Interpolation duration=0 здесь намеренно:
-             * плавность поступательного движения дает teleportDuration=3,
-             * а rotation становится плавным за счет малого currentTurn.
+             * Поступательное движение сглаживается клиентским
+             * teleportDuration=3, а матрица корпуса обновляется отдельно.
              */
-            /*
-             * Transformation интерполируется отдельно от teleport.
-             * Это сглаживает именно поворот корпуса.
-             */
-            /*
-             * Вперед/назад сглаживаются teleportDuration.
-             * Transformation не интерполируем, чтобы не смешивать
-             * две системы движения.
-             */
-            display.setInterpolationDelay(-1);
-            display.setInterpolationDuration(
-                    DISPLAY_INTERPOLATION_DURATION
-            );
-
             display.setTransformationMatrix(
                     matrix
             );
@@ -771,6 +752,81 @@ public class ActiveShip {
         );
 
         return matrix;
+    }
+
+    /**
+     * Рассчитывает положение центра корабля за один тик с учетом поворота.
+     *
+     * Если yaw меняется одновременно с движением, корабль не должен
+     * сначала ехать по старому курсу, а затем визуально доворачиваться.
+     * При постоянной угловой скорости интегрируем движение по небольшой
+     * дуге. При нулевом повороте используется обычный прямой вектор.
+     */
+    private static Location calculateNextCenter(
+            Location center,
+            float fromYaw,
+            float toYaw,
+            double speed
+    ) {
+        Location result = center.clone();
+
+        if (Math.abs(speed) <= 0.00001) {
+            return result;
+        }
+
+        double deltaDegrees =
+                normalizeDelta(
+                        toYaw - fromYaw
+                );
+
+        double deltaRadians =
+                Math.toRadians(deltaDegrees);
+
+        double fromRadians =
+                Math.toRadians(fromYaw);
+
+        if (Math.abs(deltaRadians) < 1.0E-8) {
+            result.add(
+                    -Math.sin(fromRadians) * speed,
+                    0.0,
+                    Math.cos(fromRadians) * speed
+            );
+
+            return result;
+        }
+
+        /*
+         * Интеграл направления вперед по дуге:
+         *
+         * dx = v / omega * (cos(to) - cos(from))
+         * dz = v / omega * (sin(to) - sin(from))
+         *
+         * Для маленьких корабельных углов это дает ту же скорость,
+         * но без бокового скольжения при одновременном повороте.
+         */
+        double omega = deltaRadians;
+
+        double deltaX =
+                speed / omega
+                        * (
+                        Math.cos(fromRadians + deltaRadians)
+                                - Math.cos(fromRadians)
+                );
+
+        double deltaZ =
+                speed / omega
+                        * (
+                        Math.sin(fromRadians + deltaRadians)
+                                - Math.sin(fromRadians)
+                );
+
+        result.add(
+                deltaX,
+                0.0,
+                deltaZ
+        );
+
+        return result;
     }
 
     private static boolean sameCenter(
