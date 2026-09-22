@@ -100,6 +100,17 @@ public class ActiveShip {
     private final List<ShipBlockData> originalBlocks =
             new ArrayList<>();
 
+    /**
+     * Визуальный root корабля.
+     *
+     * Цепочка:
+     * ArmorStand carrier -> parent BlockDisplay -> block displays.
+     *
+     * Положение parent наследуется от carrier, а дочерние Display меняют
+     * только локальную Transformation.
+     */
+    private final BlockDisplay displayRoot;
+
     private final List<BlockDisplay> displayEntities =
             new ArrayList<>();
 
@@ -355,10 +366,35 @@ public class ActiveShip {
         }
 
         /*
-         * Все Display создаются в ОДНОЙ мировой позиции:
-         * точке helmAnchor.
+         * Визуальный root является пассажиром carrier.
          *
-         * Их реальные координаты задаются Transformation.
+         * Позиция root больше не телепортируется из tick(). Она наследуется
+         * от движущегося ArmorStand.
+         */
+        this.displayRoot =
+                anchorLocation.getWorld().spawn(
+                        helmLocation,
+                        BlockDisplay.class,
+                        entity -> {
+                            entity.setBlock(
+                                    Bukkit.createBlockData(Material.AIR)
+                            );
+                            entity.setPersistent(false);
+                            entity.setGravity(false);
+                            entity.setTeleportDuration(0);
+                            entity.setInterpolationDelay(0);
+                            entity.setInterpolationDuration(
+                                    DISPLAY_INTERPOLATION_DURATION
+                            );
+                            entity.setDisplayWidth(0.0f);
+                            entity.setDisplayHeight(0.0f);
+                            entity.setViewRange(64.0f);
+                        }
+                );
+
+        /*
+         * Все BlockDisplay создаются рядом с визуальным root.
+         * После passenger-chain их мировая позиция следует за carrier.
          */
         for (ShipBlockData block : originalBlocks) {
             Matrix4f matrix =
@@ -379,28 +415,11 @@ public class ActiveShip {
                                 entity.setPersistent(false);
                                 entity.setGravity(false);
 
-                                entity.setTeleportDuration(
-                                        DISPLAY_TELEPORT_DURATION
-                                );
-
                                 /*
-                                 * Один тик interpolation для позиции:
-                                 * новый target приходит каждый server tick,
-                                 * поэтому клиент получает непрерывное
-                                 * движение без трехтиковой задержки.
-                                 *
-                                 * Поворот матрицы отдельно интерполируется
-                                 * двумя тиками ниже.
+                                 * Положение child наследуется от parent
+                                 * BlockDisplay через passenger-chain.
                                  */
-
-                                /*
-                                 * Отдельно сглаживаем Transformation:
-                                 * это касается именно поворота/матрицы корпуса.
-                                 *
-                                 * В Paper teleportDuration и interpolationDuration
-                                 * являются разными механизмами клиентской
-                                 * интерполяции.
-                                 */
+                                entity.setTeleportDuration(0);
                                 entity.setInterpolationDelay(0);
                                 entity.setInterpolationDuration(
                                         DISPLAY_INTERPOLATION_DURATION
@@ -421,6 +440,45 @@ public class ActiveShip {
 
             display.setTransformationMatrix(
                     matrix
+            );
+        }
+
+        /*
+         * Собираем визуальную passenger-chain:
+         *
+         * ArmorStand carrier
+         *        |
+         *        +-- parent BlockDisplay
+         *               |
+         *               +-- BlockDisplay x N
+         *
+         * Player остаётся отдельным пассажиром carrier.
+         */
+        for (BlockDisplay display : displayEntities) {
+            if (!displayRoot.addPassenger(display)) {
+                displayRoot.remove();
+                for (BlockDisplay spawned : displayEntities) {
+                    if (spawned.isValid()) {
+                        spawned.remove();
+                    }
+                }
+                helmAnchor.remove();
+                throw new IllegalStateException(
+                        "Не удалось собрать passenger-chain корабля"
+                );
+            }
+        }
+
+        if (!helmAnchor.addPassenger(displayRoot)) {
+            displayRoot.remove();
+            for (BlockDisplay spawned : displayEntities) {
+                if (spawned.isValid()) {
+                    spawned.remove();
+                }
+            }
+            helmAnchor.remove();
+            throw new IllegalStateException(
+                    "Не удалось привязать визуальный root к carrier"
             );
         }
 
@@ -732,22 +790,6 @@ public class ActiveShip {
     }
 
     private void updateDisplays() {
-        Location helmLocation =
-                anchorCenter.clone();
-
-        helmLocation.add(
-                0.0,
-                HELM_VERTICAL_OFFSET,
-                0.0
-        );
-
-        helmLocation.setYaw(
-                initialYaw
-        );
-        helmLocation.setPitch(
-                0.0f
-        );
-
         for (int i = 0;
              i < originalBlocks.size();
              i++) {
@@ -760,20 +802,11 @@ public class ActiveShip {
             }
 
             /*
-             * Один общий teleport target для всего корабля.
-             *
-             * teleportDuration и параметры interpolation задаются один раз
-             * при создании Display. В каждом тике меняется только сама
-             * позиция/матрица, без лишних metadata-update пакетов.
+             * Position наследуется от displayRoot -> helmAnchor.
+             * Здесь меняется только локальная Transformation:
+             * геометрия блока + текущий yaw корабля.
              */
-            display.teleport(
-                    helmLocation
-            );
 
-            /*
-             * Rotation выполняется отдельно через Transformation.
-             * При движении вперед matrix не пересоздает мировую позицию.
-             */
             Matrix4f matrix =
                     displayMatrices.get(i);
 
@@ -1233,6 +1266,10 @@ public class ActiveShip {
 
         pilot.teleport(land);
         pilot.setVelocity(new Vector());
+
+        if (displayRoot.isValid()) {
+            displayRoot.remove();
+        }
 
         for (BlockDisplay display : displayEntities) {
             if (display.isValid()) {
