@@ -319,7 +319,17 @@ public class ActiveShip {
                             stand.setSmall(true);
                             stand.setInvisible(true);
                             stand.setMarker(false);
-                            stand.setGravity(false);
+                            /*
+                             * Для carrier нельзя отключать gravity, если он
+                             * должен перемещаться через Entity#setVelocity().
+                             * Paper отдельно предоставляет ArmorStand#setCanMove().
+                             *
+                             * Y-скорость каждый тик задается равной 0, поэтому
+                             * carrier не падает, но горизонтальное движение
+                             * через velocity продолжает работать.
+                             */
+                            stand.setGravity(true);
+                            stand.setCanMove(true);
                             stand.setInvulnerable(true);
                             stand.setPersistent(false);
                             stand.setSilent(true);
