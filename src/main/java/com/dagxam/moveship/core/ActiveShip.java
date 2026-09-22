@@ -144,7 +144,19 @@ public class ActiveShip {
             ItemStack[] items = null;
 
             if (snapshot instanceof Container container) {
+                /*
+                 * Контейнер сначала полностью сохраняется в snapshot,
+                 * затем его инвентарь очищается ДО удаления физического блока.
+                 *
+                 * Иначе при setType(AIR) Minecraft/Paper может обработать
+                 * содержимое как обычный лут контейнера и выбросить предметы
+                 * в мир. Во время движения живая копия инвентаря не нужна:
+                 * содержимое хранится внутри ShipBlockData и возвращается
+                 * только при восстановлении корабля.
+                 */
                 items = deepCopy(container.getInventory());
+                container.getInventory().clear();
+                container.update(true, false);
             }
 
             originalBlocks.add(
@@ -426,10 +438,23 @@ public class ActiveShip {
 
         Location seat = rootEntity.getLocation();
 
-        if (Math.abs(seat.getX() - seatX) > 0.0001
-                || Math.abs(seat.getY() - seatY) > 0.0001
-                || Math.abs(seat.getZ() - seatZ) > 0.0001) {
+        double dx = seatX - seat.getX();
+        double dy = seatY - seat.getY();
+        double dz = seatZ - seat.getZ();
 
+        if (Math.abs(dx) > 0.0001
+                || Math.abs(dy) > 0.0001
+                || Math.abs(dz) > 0.0001) {
+
+            /*
+             * Сначала принимаем точную серверную позицию carrier.
+             * Затем передаем то же фактическое смещение через velocity.
+             *
+             * Такой порядок использовался в ветке с рабочей плавностью:
+             * teleport задает точное состояние сервера, а velocity сообщает
+             * клиенту фактическое движение за тик и делает перевозку
+             * пассажира визуально заметно плавнее.
+             */
             seat.setX(seatX);
             seat.setY(seatY);
             seat.setZ(seatZ);
@@ -437,16 +462,19 @@ public class ActiveShip {
             seat.setPitch(0.0f);
 
             rootEntity.teleport(seat);
+            rootEntity.setVelocity(new Vector(dx, dy, dz));
+        } else {
+            rootEntity.setVelocity(new Vector());
         }
 
         rootEntity.setRotation(0.0f, 0.0f);
 
         /*
-         * Пока игрок является пассажиром штурвала, его собственное физическое
-         * ускорение не должно сдвигать его относительно посадочного места.
+         * Игрок уже является пассажиром carrier-а.
+         * Не обнуляем его velocity вручную: это конкурировало с движением
+         * carrier и могло давать ощущение рывка/потери плавности.
          */
         pilot.setFallDistance(0.0f);
-        pilot.setVelocity(new Vector());
     }
 
     private void updateDisplays() {
