@@ -95,6 +95,10 @@ public class ActiveShip {
     private BukkitTask task;
     private boolean restored;
 
+    private final int originBlockX;
+    private final int originBlockY;
+    private final int originBlockZ;
+
     /**
      * Высота поверхности воды, определённая до удаления физического корпуса.
      * Заполняем водой только бывшие клетки корабля на этой высоте и ниже,
@@ -124,6 +128,10 @@ public class ActiveShip {
 
         this.pilot = pilot;
         this.plugin = JavaPlugin.getPlugin(com.dagxam.moveship.MoveShipPlugin.class);
+
+        this.originBlockX = anchorLocation.getBlockX();
+        this.originBlockY = anchorLocation.getBlockY();
+        this.originBlockZ = anchorLocation.getBlockZ();
 
         this.anchorCenter = anchorLocation.getBlock().getLocation().add(0.5, 0.0, 0.5);
         this.anchorCenter.setWorld(anchorLocation.getWorld());
