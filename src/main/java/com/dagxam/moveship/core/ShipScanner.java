@@ -74,7 +74,7 @@ public final class ShipScanner {
 
         Block startBlock = startLocation.getBlock();
 
-        if (!isValidShipBlock(startBlock.getType())) {
+        if (!isValidShipBlock(startBlock)) {
             return new ScanResult(Set.of(), false);
         }
 
@@ -108,13 +108,46 @@ public final class ShipScanner {
                     continue;
                 }
 
-                if (isValidShipBlock(neighbor.getType())) {
+                if (isValidShipBlock(neighbor)) {
                     queue.add(neighbor);
                 }
             }
         }
 
         return new ScanResult(shipBlocks, limitReached);
+    }
+
+    /**
+     * Проверяет блок целиком, а не только Material.
+     *
+     * Любой Paper TileStateInventoryHolder автоматически становится
+     * допустимой частью корабля. Это позволяет не пропустить новые
+     * функциональные/редстоун-блоки с инвентарем: crafter, shulker box,
+     * chiseled bookshelf, decorated pot, jukebox, shelf и т.п.
+     */
+    private static boolean isValidShipBlock(Block block) {
+        if (block == null) {
+            return false;
+        }
+
+        if (isValidShipBlock(block.getType())) {
+            return true;
+        }
+
+        try {
+            /*
+             * InventoryHolder покрывает блоки, которые имеют предметный
+             * слот, но не обязаны наследоваться непосредственно от
+             * TileStateInventoryHolder.
+             */
+            if (block.getState() instanceof org.bukkit.inventory.InventoryHolder) {
+                return true;
+            }
+        } catch (Exception ignored) {
+            // Нестандартное состояние блока не должно ломать сканирование.
+        }
+
+        return false;
     }
 
     private static boolean isValidShipBlock(Material type) {
