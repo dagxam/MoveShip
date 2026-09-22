@@ -2,6 +2,8 @@ package com.dagxam.moveship.core;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Input;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.World;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -144,6 +146,11 @@ public class ActiveShip {
 
             BlockData blockData = block.getBlockData().clone();
             BlockState snapshot = block.getState(true);
+            ItemStack[] items = null;
+
+            if (snapshot instanceof Container container) {
+                items = deepCopy(container.getInventory());
+            }
 
             originalBlocks.add(
                     new ShipBlockData(
@@ -151,23 +158,93 @@ public class ActiveShip {
                             localY,
                             localZ,
                             blockData,
-                            snapshot
+                            snapshot,
+                            items
                     )
             );
         }
 
         /*
-         * После snapshot мир очищается.
-         * Инвентари отдельно не переносятся: их состояние находится
-         * в сохраненном BlockState.
+         * Сначала создаем визуальные сущности, пока физические блоки еще
+         * находятся в мире. Это делает активацию транзакционной: при любой
+         * ошибке можно оставить исходный корабль нетронутым.
          */
-        for (Block block : blocks) {
+        try {
+            this.rootEntity = anchorLocation.getWorld().spawn(
+                    pilotStart,
+                    ArmorStand.class,
+                    entity -> {
+                        entity.setInvisible(true);
+                        entity.setInvulnerable(true);
+                        entity.setGravity(false);
+                        entity.setMarker(true);
+                        entity.setSmall(true);
+                        entity.setBasePlate(false);
+                        entity.setPersistent(false);
+                        entity.setSilent(true);
+                        entity.setRotation(0.0f, 0.0f);
+                    }
+            );
+
+            if (!rootEntity.addPassenger(pilot)) {
+                rootEntity.remove();
+                throw new IllegalStateException(
+                        "Не удалось посадить игрока на штурвал"
+                );
+            }
+
+            for (ShipBlockData block : originalBlocks) {
+                Location initialLocation =
+                        blockWorldLocation(block, anchorCenter, 0.0f);
+                Matrix4f matrix = createBlockMatrix(0.0f);
+
+                BlockDisplay display =
+                        anchorLocation.getWorld().spawn(
+                                initialLocation,
+                                BlockDisplay.class,
+                                entity -> {
+                                    entity.setBlock(
+                                            block.getBlockData().clone()
+                                    );
+                                    entity.setPersistent(false);
+                                    entity.setTeleportDuration(1);
+                                    entity.setInterpolationDelay(0);
+                                    entity.setInterpolationDuration(1);
+                                }
+                        );
+
+                displayEntities.add(display);
+                displayLocations.add(initialLocation);
+                displayMatrices.add(matrix);
+                display.setTransformationMatrix(matrix);
+            }
+
             /*
-             * Обычный setType(AIR, false) не является разрушением блока.
-             * Физика не запускается, поэтому контейнер не нужно вручную
-             * очищать перед превращением в AIR.
+             * Только после успешного создания всех сущностей удаляем
+             * физические блоки.
              */
-            block.setType(Material.AIR, false);
+            for (Block block : blocks) {
+                block.setType(Material.AIR, false);
+            }
+        } catch (RuntimeException ex) {
+            for (BlockDisplay display : displayEntities) {
+                if (display != null && display.isValid()) {
+                    display.remove();
+                }
+            }
+
+            displayEntities.clear();
+            displayLocations.clear();
+            displayMatrices.clear();
+
+            if (rootEntity != null && rootEntity.isValid()) {
+                rootEntity.eject();
+                rootEntity.remove();
+            }
+
+            restoreOriginalBlocks(blocks);
+
+            throw ex;
         }
 
         /*
@@ -689,6 +766,8 @@ public class ActiveShip {
             }
         }
 
+        restoreContainerInventories(entries);
+
         /*
          * Игрок возвращается на корабль, сохраняя собственный yaw/pitch.
          */
@@ -764,6 +843,148 @@ public class ActiveShip {
         return top != Integer.MIN_VALUE
                 ? top + 1.0
                 : pilot.getLocation().getY();
+    }
+
+    private void restoreOriginalBlocks(Set<Block> blocks) {
+        /*
+         * При неудачной активации физические блоки должны остаться ровно
+         * такими, какими они были до запуска.
+         */
+        for (ShipBlockData data : originalBlocks) {
+            Block target =
+                    anchorCenter.getWorld().getBlockAt(
+                            anchorCenter.getBlockX() + data.getLocalX(),
+                            anchorCenter.getBlockY() + data.getLocalY(),
+                            anchorCenter.getBlockZ() + data.getLocalZ()
+                    );
+
+            target.setType(
+                    data.getBlockData().getMaterial(),
+                    false
+            );
+            target.setBlockData(
+                    data.getBlockData().clone(),
+                    false
+            );
+
+            try {
+                BlockState state =
+                        data.getStateSnapshot()
+                                .copy(target.getLocation());
+                state.setBlockData(data.getBlockData().clone());
+                state.update(true, false);
+            } catch (Exception ex) {
+                plugin.getLogger().warning(
+                        "Не удалось восстановить блок после ошибки активации "
+                                + target.getLocation()
+                                + ": "
+                                + ex.getMessage()
+                );
+            }
+
+            restoreContainerInventory(target, data.getItems());
+        }
+    }
+
+    private void restoreContainerInventories(
+            List<RestoreEntry> entries
+    ) {
+        for (RestoreEntry entry : entries) {
+            restoreContainerInventory(
+                    entry.block(),
+                    findItemsForLocation(entry.block().getLocation())
+            );
+        }
+
+        /*
+         * Дополнительная попытка через один тик нужна для TileEntity,
+         * которые Paper создает не мгновенно после установки блока.
+         */
+        if (!entries.isEmpty()) {
+            Bukkit.getScheduler().runTaskLater(
+                    plugin,
+                    () -> {
+                        if (restored) {
+                            return;
+                        }
+
+                        for (RestoreEntry entry : entries) {
+                            restoreContainerInventory(
+                                    entry.block(),
+                                    findItemsForLocation(
+                                            entry.block().getLocation()
+                                    )
+                            );
+                        }
+                    },
+                    1L
+            );
+        }
+    }
+
+    private ItemStack[] findItemsForLocation(Location location) {
+        if (location == null || location.getWorld() == null) {
+            return null;
+        }
+
+        int x = location.getBlockX();
+        int y = location.getBlockY();
+        int z = location.getBlockZ();
+
+        for (ShipBlockData data : originalBlocks) {
+            Block target =
+                    anchorCenter.getWorld().getBlockAt(
+                            anchorCenter.getBlockX() + data.getLocalX(),
+                            anchorCenter.getBlockY() + data.getLocalY(),
+                            anchorCenter.getBlockZ() + data.getLocalZ()
+                    );
+
+            if (target.getX() == x
+                    && target.getY() == y
+                    && target.getZ() == z) {
+                return data.getItems();
+            }
+        }
+
+        return null;
+    }
+
+    private void restoreContainerInventory(
+            Block block,
+            ItemStack[] items
+    ) {
+        if (block == null
+                || items == null
+                || !(block.getState() instanceof Container container)) {
+            return;
+        }
+
+        Inventory inventory = container.getInventory();
+        inventory.clear();
+
+        for (int i = 0; i < Math.min(items.length, inventory.getSize()); i++) {
+            ItemStack item = items[i];
+
+            if (item != null) {
+                inventory.setItem(i, item.clone());
+            }
+        }
+
+        container.update(true, false);
+    }
+
+    private static ItemStack[] deepCopy(Inventory inventory) {
+        ItemStack[] items = new ItemStack[inventory.getSize()];
+
+        for (int i = 0; i < items.length; i++) {
+            ItemStack item = inventory.getItem(i);
+
+            if (item != null && !item.getType().isAir()) {
+                items[i] = item.clone();
+            }
+        }
+
+        return items;
     }
 
     private void stopInternal() {
