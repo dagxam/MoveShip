@@ -214,6 +214,30 @@ public class ActiveShip {
                 display.setTransformationMatrix(matrix);
             }
 
+            /*
+             * Контейнеры сначала очищаем от живого инвентаря.
+             * Содержимое уже полностью сохранено в ShipBlockData.
+             * Это гарантирует, что при снятии сундука/бочки/печки
+             * Minecraft/Paper не создаст выпавшие ItemEntity.
+             */
+            for (ShipBlockData data : originalBlocks) {
+                if (data.getItems() == null) {
+                    continue;
+                }
+
+                Block containerBlock =
+                        anchorLocation.getWorld().getBlockAt(
+                                anchorLocation.getBlockX() + data.getLocalX(),
+                                anchorLocation.getBlockY() + data.getLocalY(),
+                                anchorLocation.getBlockZ() + data.getLocalZ()
+                        );
+
+                if (containerBlock.getState() instanceof Container container) {
+                    container.getInventory().clear();
+                    container.update(true, false);
+                }
+            }
+
             for (Block block : blocks) {
                 block.setType(Material.AIR, false);
             }
@@ -820,17 +844,16 @@ public class ActiveShip {
         }
 
         /*
-         * Дополнительная попытка через один тик нужна для TileEntity,
-         * которые завершают инициализацию после установки блока.
+         * Дополнительные попытки нужны для TileEntity, которым Paper
+         * завершает внутреннюю инициализацию после установки блока.
+         * Здесь НЕ проверяем restored: к этому моменту restoreBlocks()
+         * уже поставил restored=true, но восстановление инвентарей все равно
+         * должно быть разрешено.
          */
         if (!entries.isEmpty()) {
             Bukkit.getScheduler().runTaskLater(
                     plugin,
                     () -> {
-                        if (restored) {
-                            return;
-                        }
-
                         for (RestoreEntry entry : entries) {
                             restoreContainerInventory(
                                     entry.block(),
@@ -839,6 +862,19 @@ public class ActiveShip {
                         }
                     },
                     1L
+            );
+
+            Bukkit.getScheduler().runTaskLater(
+                    plugin,
+                    () -> {
+                        for (RestoreEntry entry : entries) {
+                            restoreContainerInventory(
+                                    entry.block(),
+                                    entry.items()
+                            );
+                        }
+                    },
+                    5L
             );
         }
     }
