@@ -45,15 +45,6 @@ public class ActiveShip {
     private final List<Matrix4f> displayMatrices = new ArrayList<>();
 
     /**
-     * Клетки физического корпуса, под которыми/рядом с которыми до
-     * активации находилась вода.
-     *
-     * После удаления физического корпуса эти клетки заполняются водой,
-     * чтобы в океане не оставалась пустая воздушная полость на месте судна.
-     */
-    private final Set<BlockKey> waterFillCells = new HashSet<>();
-
-    /**
      * Светящиеся блоки корабля. BlockDisplay отвечает за внешний вид,
      * а временные LIGHT-блоки ниже поддерживают настоящее освещение мира.
      */
@@ -103,6 +94,13 @@ public class ActiveShip {
 
     private BukkitTask task;
     private boolean restored;
+
+    /**
+     * Высота поверхности воды, определённая до удаления физического корпуса.
+     * Заполняем водой только бывшие клетки корабля на этой высоте и ниже,
+     * поэтому надводная часть не превращается в водяную стену.
+     */
+    private int originalWaterLevel = Integer.MIN_VALUE;
 
     /**
      * Положение игрока относительно центра корабля в момент старта.
@@ -178,31 +176,23 @@ public class ActiveShip {
                 );
             }
 
-            if (snapshot instanceof Container container) {
+            if (snapshot instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory) {
                 /*
-                 * Контейнер сначала полностью сохраняется в snapshot,
-                 * затем его инвентарь очищается ДО удаления физического блока.
+                 * В Paper контейнеры и другие inventory TileState используют
+                 * отдельный snapshot-инвентарь. Именно его нужно очистить
+                 * перед setType(AIR), иначе Bukkit/Paper может выбросить
+                 * сохранённые предметы в мир при удалении блока.
                  *
-                 * Иначе при setType(AIR) Minecraft/Paper может обработать
-                 * содержимое как обычный лут контейнера и выбросить предметы
-                 * в мир. Во время движения живая копия инвентаря не нужна:
-                 * содержимое хранится внутри ShipBlockData и возвращается
-                 * только при восстановлении корабля.
+                 * Сначала делаем независимую копию содержимого для корабля,
+                 * затем очищаем snapshot и записываем пустое состояние
+                 * обратно в мир.
                  */
-                items = deepCopy(container.getInventory());
-                container.getInventory().clear();
-                container.update(true, false);
+                items = deepCopy(tileInventory.getSnapshotInventory());
+                tileInventory.getSnapshotInventory().clear();
+                tileInventory.update(true, false);
             }
 
-            if (hasAdjacentWater(block)) {
-                waterFillCells.add(
-                        new BlockKey(
-                                block.getX(),
-                                block.getY(),
-                                block.getZ()
-                        )
-                );
-            }
+            updateOriginalWaterLevel(block);
 
             originalBlocks.add(
                     new ShipBlockData(
@@ -261,7 +251,7 @@ public class ActiveShip {
                                     entity.setPersistent(false);
                                     entity.setTeleportDuration(1);
                                     entity.setInterpolationDelay(0);
-                                    entity.setInterpolationDuration(1);
+                                    entity.setInterpolationDuration(2);
                                 }
                         );
 
@@ -300,9 +290,9 @@ public class ActiveShip {
             }
 
             /*
-             * Корабль стоял в воде. После удаления физического корпуса
-             * не оставляем воздушные ячейки там, где до активации вода
-             * непосредственно соприкасалась с корпусом.
+             * Корабль находился в воде. Восстанавливаем воду только в
+             * бывших клетках корпуса, которые были не выше исходной
+             * поверхности воды. Надводная часть остаётся воздухом.
              */
             restoreWaterAtOriginalPosition();
 
@@ -530,7 +520,15 @@ public class ActiveShip {
             seat.setPitch(0.0f);
 
             rootEntity.teleport(seat);
-            rootEntity.setVelocity(new Vector(dx, dy, dz));
+
+            Vector seatVelocity = new Vector(dx, dy, dz);
+            rootEntity.setVelocity(seatVelocity);
+
+            /*
+             * Дополнительный position-sync пакет не заменяет teleport/velocity:
+             * он только не даёт клиентскому entity tracker накапливать задержку.
+             */
+            sendPositionSync(seat, seatVelocity);
         } else {
             rootEntity.setVelocity(new Vector());
         }
@@ -546,46 +544,267 @@ public class ActiveShip {
     }
 
     /**
-     * Проверяет, соприкасается ли исходная клетка корабля с водой
-     * до удаления физической конструкции.
+     * До удаления корпуса определяет реальную поверхность воды по ближайшим
+     * водяным клеткам, соприкасающимся с кораблём.
+     *
+     * Используется один общий уровень для всего корабля — как в классической
+     * логике watercraft-плагинов: подводная часть заполняется водой, надводная
+     * остаётся воздухом. Movecraft также описывает восстановление воды через
+     * определение уровня воды вокруг craft.
      */
-    private static boolean hasAdjacentWater(Block block) {
-        return block.getRelative(BlockFace.UP).getType() == Material.WATER
-                || block.getRelative(BlockFace.DOWN).getType() == Material.WATER
-                || block.getRelative(BlockFace.NORTH).getType() == Material.WATER
-                || block.getRelative(BlockFace.SOUTH).getType() == Material.WATER
-                || block.getRelative(BlockFace.EAST).getType() == Material.WATER
-                || block.getRelative(BlockFace.WEST).getType() == Material.WATER
-                || block.getRelative(BlockFace.UP).getType() == Material.BUBBLE_COLUMN
-                || block.getRelative(BlockFace.DOWN).getType() == Material.BUBBLE_COLUMN
-                || block.getRelative(BlockFace.NORTH).getType() == Material.BUBBLE_COLUMN
-                || block.getRelative(BlockFace.SOUTH).getType() == Material.BUBBLE_COLUMN
-                || block.getRelative(BlockFace.EAST).getType() == Material.BUBBLE_COLUMN
-                || block.getRelative(BlockFace.WEST).getType() == Material.BUBBLE_COLUMN;
+    private void updateOriginalWaterLevel(Block block) {
+        BlockFace[] faces = {
+                BlockFace.UP,
+                BlockFace.DOWN,
+                BlockFace.NORTH,
+                BlockFace.SOUTH,
+                BlockFace.EAST,
+                BlockFace.WEST
+        };
+
+        for (BlockFace face : faces) {
+            Block adjacent = block.getRelative(face);
+            Material type = adjacent.getType();
+
+            if (type == Material.WATER || type == Material.BUBBLE_COLUMN) {
+                originalWaterLevel = Math.max(
+                        originalWaterLevel,
+                        adjacent.getY()
+                );
+            }
+        }
     }
 
     /**
-     * Восстанавливает воду в освободившихся исходных клетках корабля.
+     * Восстанавливает воду только в тех бывших клетках корабля,
+     * которые находились на уровне воды или ниже.
      *
-     * Запись выполняется только в воздух, поэтому окружающие блоки,
-     * землю и существующие конструкции мы не затрагиваем.
+     * Важно: мы больше не заполняем водой все клетки, просто соприкасавшиеся
+     * с водой. Именно это раньше создавало на скриншоте огромные водяные стены.
      */
     private void restoreWaterAtOriginalPosition() {
         World world = anchorCenter.getWorld();
 
-        if (world == null || waterFillCells.isEmpty()) {
+        if (world == null
+                || originalWaterLevel == Integer.MIN_VALUE) {
             return;
         }
 
-        for (BlockKey key : waterFillCells) {
+        for (ShipBlockData data : originalBlocks) {
+            int y = originBlockY + data.getLocalY();
+
+            if (y > originalWaterLevel) {
+                continue;
+            }
+
             Block block = world.getBlockAt(
-                    key.x(),
-                    key.y(),
-                    key.z()
+                    originBlockX + data.getLocalX(),
+                    y,
+                    originBlockZ + data.getLocalZ()
             );
 
             if (block.getType().isAir()) {
                 block.setType(Material.WATER, false);
+            }
+        }
+    }
+
+    /*
+     * Optional ProtocolLib position synchronization.
+     *
+     * Paper's normal entity tracker may not send ArmorStand position updates
+     * every tick. Similar modern ship plugins use an extra per-tick position
+     * sync for the root vehicle to prevent visible rider/display rubber-banding.
+     * When ProtocolLib is absent or a packet format is unsupported, the normal
+     * Bukkit teleport/velocity path remains active.
+     */
+    private static boolean positionSyncInitialized;
+    private static boolean positionSyncAvailable;
+    private static Object positionSyncProtocolManager;
+    private static Object positionSyncPacketType;
+    private static java.lang.reflect.Method positionSyncCreatePacket;
+    private static java.lang.reflect.Method positionSyncSendPacket;
+    private static java.lang.reflect.Method positionSyncGetModifier;
+    private static java.lang.reflect.Method positionSyncModifierWrite;
+    private static java.lang.reflect.Constructor<?> positionSyncVec3Constructor;
+    private static java.lang.reflect.Constructor<?> positionSyncPositionMoveRotationConstructor;
+
+    private void sendPositionSync(Location location, Vector velocity) {
+        initializePositionSync();
+
+        if (!positionSyncAvailable
+                || rootEntity == null
+                || !rootEntity.isValid()
+                || location == null) {
+            return;
+        }
+
+        try {
+            Object packet = positionSyncCreatePacket.invoke(
+                    positionSyncProtocolManager,
+                    positionSyncPacketType
+            );
+
+            Object modifier = positionSyncGetModifier.invoke(packet);
+
+            positionSyncModifierWrite.invoke(
+                    modifier,
+                    0,
+                    rootEntity.getEntityId()
+            );
+
+            Object position = positionSyncVec3Constructor.newInstance(
+                    location.getX(),
+                    location.getY(),
+                    location.getZ()
+            );
+
+            double vx = velocity == null ? 0.0 : velocity.getX();
+            double vy = velocity == null ? 0.0 : velocity.getY();
+            double vz = velocity == null ? 0.0 : velocity.getZ();
+
+            Object deltaMovement = positionSyncVec3Constructor.newInstance(
+                    vx,
+                    vy,
+                    vz
+            );
+
+            Object positionMoveRotation =
+                    positionSyncPositionMoveRotationConstructor.newInstance(
+                            position,
+                            deltaMovement,
+                            location.getYaw(),
+                            location.getPitch()
+                    );
+
+            positionSyncModifierWrite.invoke(
+                    modifier,
+                    1,
+                    positionMoveRotation
+            );
+
+            for (Player tracked : rootEntity.getTrackedBy()) {
+                if (tracked != null && tracked.isOnline()) {
+                    positionSyncSendPacket.invoke(
+                            positionSyncProtocolManager,
+                            tracked,
+                            packet
+                    );
+                }
+            }
+        } catch (Throwable ex) {
+            positionSyncAvailable = false;
+
+            if (plugin != null) {
+                plugin.getLogger().warning(
+                        "Синхронизация позиции корабля через ProtocolLib отключена: "
+                                + ex.getMessage()
+                );
+            }
+        }
+    }
+
+    private void initializePositionSync() {
+        if (positionSyncInitialized) {
+            return;
+        }
+
+        synchronized (ActiveShip.class) {
+            if (positionSyncInitialized) {
+                return;
+            }
+
+            positionSyncInitialized = true;
+
+            try {
+                Class<?> protocolLibrary =
+                        Class.forName("com.comphenix.protocol.ProtocolLibrary");
+
+                Class<?> packetTypeServer =
+                        Class.forName(
+                                "com.comphenix.protocol.PacketType$Play$Server"
+                        );
+
+                positionSyncPacketType =
+                        packetTypeServer.getField("ENTITY_TELEPORT").get(null);
+
+                Object manager =
+                        protocolLibrary
+                                .getMethod("getProtocolManager")
+                                .invoke(null);
+
+                Class<?> packetTypeClass =
+                        Class.forName("com.comphenix.protocol.PacketType");
+
+                Class<?> packetContainerClass =
+                        Class.forName(
+                                "com.comphenix.protocol.events.PacketContainer"
+                        );
+
+                positionSyncProtocolManager = manager;
+
+                positionSyncCreatePacket =
+                        manager.getClass().getMethod(
+                                "createPacket",
+                                packetTypeClass
+                        );
+
+                positionSyncSendPacket =
+                        manager.getClass().getMethod(
+                                "sendServerPacket",
+                                Player.class,
+                                packetContainerClass
+                        );
+
+                positionSyncGetModifier =
+                        packetContainerClass.getMethod("getModifier");
+
+                Class<?> modifierClass =
+                        Class.forName(
+                                "com.comphenix.protocol.reflect.StructureModifier"
+                        );
+
+                positionSyncModifierWrite =
+                        modifierClass.getMethod(
+                                "write",
+                                int.class,
+                                Object.class
+                        );
+
+                Class<?> vec3Class =
+                        Class.forName("net.minecraft.world.phys.Vec3");
+
+                Class<?> positionMoveRotationClass =
+                        Class.forName(
+                                "net.minecraft.world.entity.PositionMoveRotation"
+                        );
+
+                positionSyncVec3Constructor =
+                        vec3Class.getConstructor(
+                                double.class,
+                                double.class,
+                                double.class
+                        );
+
+                positionSyncPositionMoveRotationConstructor =
+                        positionMoveRotationClass.getConstructor(
+                                vec3Class,
+                                vec3Class,
+                                float.class,
+                                float.class
+                        );
+
+                positionSyncAvailable = true;
+
+                plugin.getLogger().info(
+                        "Ежетиковая синхронизация движения корабля через ProtocolLib включена."
+                );
+            } catch (Throwable ex) {
+                positionSyncAvailable = false;
+                plugin.getLogger().info(
+                        "ProtocolLib не найден или формат позиции не поддерживается. "
+                                + "Корабль продолжит работать через обычную Bukkit-синхронизацию."
+                );
             }
         }
     }
@@ -651,7 +870,7 @@ public class ActiveShip {
                         .translate(-0.5f, -0.5f, -0.5f);
 
                 display.setInterpolationDelay(0);
-                display.setInterpolationDuration(1);
+                display.setInterpolationDuration(2);
                 display.setTransformationMatrix(matrix);
             }
         }
@@ -1033,11 +1252,12 @@ public class ActiveShip {
     ) {
         if (block == null
                 || items == null
-                || !(block.getState() instanceof Container container)) {
+                || !(block.getState()
+                instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory)) {
             return;
         }
 
-        Inventory inventory = container.getInventory();
+        Inventory inventory = tileInventory.getInventory();
         inventory.clear();
 
         for (int i = 0; i < Math.min(items.length, inventory.getSize()); i++) {
@@ -1048,7 +1268,7 @@ public class ActiveShip {
             }
         }
 
-        container.update(true, false);
+        tileInventory.update(true, false);
     }
 
     private static ItemStack[] deepCopy(Inventory inventory) {
