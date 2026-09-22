@@ -1,40 +1,35 @@
-# Название процесса (будет отображаться во вкладке Actions на GitHub)
 name: Сборка плагина MoveShip
 
-# Условия запуска (триггеры)
 on:
   push:
-    # Запускать сборку при каждом пуше в ветку main (или master)
-    branches: [ "main", "master" ]
+    branches: ["main", "master"]
   pull_request:
-    # Запускать сборку при создании пулл-реквестов в эти ветки
-    branches: [ "main", "master" ]
+    branches: ["main", "master"]
 
 jobs:
   build:
-    # Виртуальная машина, на которой будет происходить сборка (берем последнюю Ubuntu)
     runs-on: ubuntu-latest
 
     steps:
-    # Шаг 1: Скачиваем ваш исходный код из репозитория на виртуальную машину
-    - name: 📥 Клонирование репозитория
-      uses: actions/checkout@v4
+      - name: Клонирование репозитория
+        uses: actions/checkout@v4
 
-    # Шаг 2: Устанавливаем и настраиваем Java 21
-    - name: ☕ Настройка Java 21 (Temurin)
-      uses: actions/setup-java@v4
-      with:
-        java-version: '21'           # Версия Java из нашего pom.xml
-        distribution: 'temurin'      # Популярный и надежный дистрибутив Java
-        cache: maven                 # Включаем кэширование (ускоряет последующие сборки)
+      - name: Настройка Java 26 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          java-version: "26"
+          distribution: "temurin"
+          cache: maven
 
-    # Шаг 3: Запускаем Maven для компиляции кода
-    - name: ⚙️ Сборка плагина (mvn clean package)
-      run: mvn -B clean package --file pom.xml
+      - name: Проверка версии Java
+        run: java -version
 
-    # Шаг 4: Загружаем скомпилированный .jar файл на GitHub (чтобы его можно было скачать)
-    - name: 📦 Сохранение готового .jar файла (Артефакт)
-      uses: actions/upload-artifact@v4
-      with:
-        name: MoveShip-Plugin                    # Как будет называться архив для скачивания
-        path: target/MoveShip-1.0-SNAPSHOT.jar   # Путь к файлу, который создал Maven
+      - name: Сборка плагина
+        run: mvn -B clean package --file pom.xml
+
+      - name: Сохранение готового JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoveShip-Plugin
+          path: target/MoveShip-1.0-SNAPSHOT.jar
+          if-no-files-found: error
