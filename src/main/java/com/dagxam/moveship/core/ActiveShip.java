@@ -45,6 +45,15 @@ public class ActiveShip {
     private final List<Matrix4f> displayMatrices = new ArrayList<>();
 
     /**
+     * Исходные клетки физического корабля.
+     *
+     * Пока корабль только активирован и ещё не начал движение, эти клетки
+     * временно игнорируются collision-check, иначе собственные физические
+     * блоки стали бы для корабля препятствием на первом маленьком шаге.
+     */
+    private final Set<BlockKey> initialShipCells = new HashSet<>();
+
+    /**
      * Светящиеся блоки корабля. BlockDisplay отвечает за внешний вид,
      * а временные LIGHT-блоки ниже поддерживают настоящее освещение мира.
      */
@@ -170,6 +179,14 @@ public class ActiveShip {
             int localX = block.getX() - anchorLocation.getBlockX();
             int localY = block.getY() - anchorLocation.getBlockY();
             int localZ = block.getZ() - anchorLocation.getBlockZ();
+
+            initialShipCells.add(
+                    new BlockKey(
+                            originBlockX + localX,
+                            originBlockY + localY,
+                            originBlockZ + localZ
+                    )
+            );
 
             BlockData blockData = block.getBlockData().clone();
             BlockState snapshot = block.getState(true);
@@ -722,6 +739,16 @@ public class ActiveShip {
             BlockKey key = new BlockKey(x, y, z);
 
             if (!checked.add(key)) {
+                continue;
+            }
+
+            /*
+             * До первого движения физический корпус ещё находится в
+             * исходных клетках мира. Эти клетки принадлежат самому кораблю
+             * и не должны блокировать его первый шаг/поворот.
+             */
+            if (!physicalBlocksCleared
+                    && initialShipCells.contains(key)) {
                 continue;
             }
 
