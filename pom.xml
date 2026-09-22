@@ -7,11 +7,11 @@
 
     <groupId>com.dagxam</groupId>
     <artifactId>MoveShip</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <packaging>jar</packaging>
 
     <name>MoveShip</name>
-    <description>Плагин для создания и управления кораблями.</description>
+    <description>Плагин управляемых кораблей для Paper с плавным движением и сохранением функциональных блоков.</description>
 
     <properties>
         <java.version>26</java.version>
