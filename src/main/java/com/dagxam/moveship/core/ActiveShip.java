@@ -48,7 +48,13 @@ public class ActiveShip {
      * а временные LIGHT-блоки ниже поддерживают настоящее освещение мира.
      */
     private final List<LightSource> lightSources = new ArrayList<>();
-    private final Set<BlockKey> activeLightCells = new HashSet<>();
+
+    /**
+     * Для каждой временной LIGHT-клетки сохраняем ровно тот BlockData,
+     * который находился там до размещения виртуального света.
+     */
+    private final java.util.Map<BlockKey, BlockData> activeLightCells =
+            new java.util.HashMap<>();
 
     /*
      * Скорость в блоках за тик.
@@ -295,6 +301,7 @@ public class ActiveShip {
                 rootEntity.remove();
             }
 
+            clearLightBlocks();
             restoreOriginalBlocks();
 
             throw ex;
@@ -989,6 +996,13 @@ public class ActiveShip {
      * Обновляет реальные невидимые источники света в соответствии
      * с текущей позицией и углом виртуального корабля.
      */
+    /**
+     * Обновляет реальные невидимые источники света в соответствии
+     * с текущей позицией и углом виртуального корабля.
+     *
+     * BlockDisplay отвечает за внешний вид светящегося блока.
+     * Material.LIGHT нужен только для настоящего освещения мира.
+     */
     private void updateLightBlocks() {
         if (lightSources.isEmpty()
                 || anchorCenter == null
@@ -1000,7 +1014,8 @@ public class ActiveShip {
         double cos = Math.cos(delta);
         double sin = Math.sin(delta);
 
-        java.util.Map<BlockKey, Integer> desired = new java.util.HashMap<>();
+        java.util.Map<BlockKey, Integer> desired =
+                new java.util.HashMap<>();
 
         for (LightSource source : lightSources) {
             int x = floorToInt(
@@ -1021,8 +1036,8 @@ public class ActiveShip {
             BlockKey key = new BlockKey(x, y, z);
 
             /*
-             * Если несколько источников после поворота попали в одну клетку,
-             * оставляем максимальную яркость.
+             * При редком совпадении нескольких источников после поворота
+             * используем максимальную яркость.
              */
             desired.merge(
                     key,
@@ -1032,10 +1047,10 @@ public class ActiveShip {
         }
 
         /*
-         * Сначала убираем LIGHT, которые остались в старых координатах.
-         * Если старый LIGHT был waterlogged, возвращаем воду.
+         * Убираем источники, оставшиеся в старых координатах,
+         * и восстанавливаем точный исходный BlockData.
          */
-        for (BlockKey old : new HashSet<>(activeLightCells)) {
+        for (BlockKey old : new HashSet<>(activeLightCells.keySet())) {
             if (desired.containsKey(old)) {
                 continue;
             }
@@ -1047,79 +1062,108 @@ public class ActiveShip {
             );
 
             if (block.getType() == Material.LIGHT) {
-                org.bukkit.block.data.type.Light light =
-                        (org.bukkit.block.data.type.Light)
-                                block.getBlockData();
+                BlockData previous =
+                        activeLightCells.get(old);
 
-                block.setType(
-                        light.isWaterlogged()
-                                ? Material.WATER
-                                : Material.AIR,
-                        false
-                );
+                if (previous != null) {
+                    block.setBlockData(
+                            previous.clone(),
+                            false
+                    );
+                } else {
+                    block.setType(
+                            Material.AIR,
+                            false
+                    );
+                }
             }
+
+            activeLightCells.remove(old);
         }
 
-        activeLightCells.clear();
-
         /*
-         * Затем ставим/обновляем новые источники света.
+         * Ставим новые источники.
+         *
+         * Важное правило: LIGHT разрешено размещать только вместо воздуха
+         * или воды/bubble-column. Лаву, растения и другие реальные блоки
+         * мы не заменяем временным светом.
          */
-        for (java.util.Map.Entry<BlockKey, Integer> entry : desired.entrySet()) {
+        for (java.util.Map.Entry<BlockKey, Integer> entry
+                : desired.entrySet()) {
+
             BlockKey key = entry.getKey();
+
+            if (activeLightCells.containsKey(key)) {
+                Block existing = anchorCenter.getWorld().getBlockAt(
+                        key.x(),
+                        key.y(),
+                        key.z()
+                );
+
+                if (existing.getType() == Material.LIGHT) {
+                    int wantedLevel = Math.max(
+                            1,
+                            Math.min(15, entry.getValue())
+                    );
+
+                    org.bukkit.block.data.type.Light light =
+                            (org.bukkit.block.data.type.Light)
+                                    existing.getBlockData().clone();
+
+                    if (light.getLevel() != wantedLevel) {
+                        light.setLevel(wantedLevel);
+                        existing.setBlockData(light, false);
+                    }
+                }
+
+                continue;
+            }
+
             Block block = anchorCenter.getWorld().getBlockAt(
                     key.x(),
                     key.y(),
                     key.z()
             );
 
-            int wantedLevel = Math.max(1, Math.min(15, entry.getValue()));
+            Material previousType = block.getType();
 
-            if (block.getType() != Material.LIGHT) {
-                org.bukkit.block.data.type.Light light =
-                        (org.bukkit.block.data.type.Light)
-                                Material.LIGHT.createBlockData();
-
-                light.setLevel(wantedLevel);
-
-                /*
-                 * Только вода и bubble column должны сохраняться под
-                 * временным LIGHT как waterlogged. Лаву заменять нельзя:
-                 * иначе при удалении LIGHT она превратится в воду.
-                 */
-                boolean water = block.getType() == Material.WATER
-                        || block.getType() == Material.BUBBLE_COLUMN;
-                light.setWaterlogged(water);
-
-                block.setBlockData(light, false);
-            } else {
-                org.bukkit.block.data.type.Light light =
-                        (org.bukkit.block.data.type.Light)
-                                block.getBlockData().clone();
-
-                boolean changed = false;
-
-                if (light.getLevel() != wantedLevel) {
-                    light.setLevel(wantedLevel);
-                    changed = true;
-                }
-
-                /*
-                 * Для уже установленного LIGHT waterlogged-состояние нельзя
-                 * пересчитывать через block.isLiquid(): сам блок теперь LIGHT.
-                 * Сохраняем текущее состояние до следующего перемещения.
-                 */
-                if (changed) {
-                    block.setBlockData(light, false);
-                }
+            if (!previousType.isAir()
+                    && previousType != Material.WATER
+                    && previousType != Material.BUBBLE_COLUMN) {
+                continue;
             }
 
-            activeLightCells.add(key);
+            activeLightCells.put(
+                    key,
+                    block.getBlockData().clone()
+            );
+
+            int wantedLevel = Math.max(
+                    1,
+                    Math.min(15, entry.getValue())
+            );
+
+            org.bukkit.block.data.type.Light light =
+                    (org.bukkit.block.data.type.Light)
+                            Material.LIGHT.createBlockData();
+
+            light.setLevel(wantedLevel);
+
+            light.setWaterlogged(
+                    previousType == Material.WATER
+                            || previousType == Material.BUBBLE_COLUMN
+            );
+
+            block.setBlockData(
+                    light,
+                    false
+            );
         }
     }
 
     /**
-     * Удаляет все временные LIGHT-блоки при остановке/откате активации.
+     * Удаляет все временные LIGHT-блоки при остановке/откате активации
+     * и восстанавливает содержимое занятых ими клеток.
      */
     private void clearLightBlocks() {
         if (activeLightCells.isEmpty()
@@ -1128,7 +1172,11 @@ public class ActiveShip {
             return;
         }
 
-        for (BlockKey key : new HashSet<>(activeLightCells)) {
+        for (java.util.Map.Entry<BlockKey, BlockData> entry
+                : new java.util.HashMap<>(activeLightCells).entrySet()) {
+
+            BlockKey key = entry.getKey();
+
             Block block = anchorCenter.getWorld().getBlockAt(
                     key.x(),
                     key.y(),
@@ -1136,14 +1184,8 @@ public class ActiveShip {
             );
 
             if (block.getType() == Material.LIGHT) {
-                org.bukkit.block.data.type.Light light =
-                        (org.bukkit.block.data.type.Light)
-                                block.getBlockData();
-
-                block.setType(
-                        light.isWaterlogged()
-                                ? Material.WATER
-                                : Material.AIR,
+                block.setBlockData(
+                        entry.getValue().clone(),
                         false
                 );
             }
