@@ -20,13 +20,33 @@ public final class ShipScanner {
      */
     public static final int MAX_SHIP_SIZE = 8192;
 
-    private static final BlockFace[] NEIGHBORS = {
-            BlockFace.NORTH,
-            BlockFace.SOUTH,
-            BlockFace.EAST,
-            BlockFace.WEST,
-            BlockFace.UP,
-            BlockFace.DOWN
+    private static final int[] OFFSETS = {
+            -1, -1, -1,
+            -1, -1,  0,
+            -1, -1,  1,
+            -1,  0, -1,
+            -1,  0,  0,
+            -1,  0,  1,
+            -1,  1, -1,
+            -1,  1,  0,
+            -1,  1,  1,
+             0, -1, -1,
+             0, -1,  0,
+             0, -1,  1,
+             0,  0, -1,
+             0,  0,  1,
+             0,  1, -1,
+             0,  1,  0,
+             0,  1,  1,
+             1, -1, -1,
+             1, -1,  0,
+             1, -1,  1,
+             1,  0, -1,
+             1,  0,  0,
+             1,  0,  1,
+             1,  1, -1,
+             1,  1,  0,
+             1,  1,  1
     };
 
     private ShipScanner() {
@@ -76,8 +96,13 @@ public final class ShipScanner {
             Block current = queue.poll();
             shipBlocks.add(current);
 
-            for (BlockFace face : NEIGHBORS) {
-                Block neighbor = current.getRelative(face);
+            for (int i = 0; i < OFFSETS.length; i += 3) {
+                Block neighbor =
+                        current.getRelative(
+                                OFFSETS[i],
+                                OFFSETS[i + 1],
+                                OFFSETS[i + 2]
+                        );
 
                 if (!visited.add(neighbor)) {
                     continue;
