@@ -5,6 +5,7 @@ import org.bukkit.Axis;
 import org.bukkit.Input;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
@@ -151,6 +152,8 @@ public class ActiveShip {
     private boolean backwardPressed;
     private boolean leftPressed;
     private boolean rightPressed;
+
+    private boolean inputDiagnosticLogged;
 
     private BukkitTask task;
 
