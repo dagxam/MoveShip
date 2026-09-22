@@ -13,7 +13,7 @@ import java.util.Set;
 
 public class ShipScanner {
 
-    private static final int MAX_SHIP_SIZE = 2048;
+    private static final int MAX_SHIP_SIZE = 9999;
 
     public static Set<Block> scanShip(Location startLocation) {
         Set<Block> shipBlocks = new HashSet<>();
@@ -24,7 +24,21 @@ public class ShipScanner {
         queue.add(startBlock);
         visited.add(startBlock.getLocation());
 
-        while (!queue.isEmpty() && shipBlocks.size() < MAX_SHIP_SIZE) {
+        boolean limitExceeded = false;
+
+        while (!queue.isEmpty()) {
+            /*
+             * Никогда не возвращаем частично отсканированный корабль.
+             *
+             * Если очередь ещё содержит блоки, а лимит достигнут, значит
+             * структура больше допустимого размера. Возвращаем null ниже,
+             * чтобы активация была полностью отменена.
+             */
+            if (shipBlocks.size() >= MAX_SHIP_SIZE) {
+                limitExceeded = true;
+                break;
+            }
+
             Block current = queue.poll();
             shipBlocks.add(current);
 
@@ -58,7 +72,15 @@ public class ShipScanner {
             }
         }
 
+        if (limitExceeded) {
+            return null;
+        }
+
         return shipBlocks;
+    }
+
+    public static int getMaxShipSize() {
+        return MAX_SHIP_SIZE;
     }
 
     private static boolean isValidShipBlock(Block block) {
