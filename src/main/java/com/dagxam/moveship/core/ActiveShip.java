@@ -11,10 +11,6 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Container;
 import org.bukkit.block.data.BlockData;
-import org.bukkit.block.data.Directional;
-import org.bukkit.block.data.MultipleFacing;
-import org.bukkit.block.data.Orientable;
-import org.bukkit.block.data.Rotatable;
 import org.bukkit.block.structure.StructureRotation;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.BlockDisplay;
@@ -165,9 +161,9 @@ public class ActiveShip {
         }
 
         /*
-         * Сначала создаем визуальные сущности, пока физические блоки еще
-         * находятся в мире. Это делает активацию транзакционной: при любой
-         * ошибке можно оставить исходный корабль нетронутым.
+         * Создаем root и все BlockDisplay, пока физические блоки еще
+         * находятся в мире. Лишь после успешного создания всей визуальной
+         * части убираем физическую конструкцию.
          */
         try {
             this.rootEntity = anchorLocation.getWorld().spawn(
@@ -219,10 +215,6 @@ public class ActiveShip {
                 display.setTransformationMatrix(matrix);
             }
 
-            /*
-             * Только после успешного создания всех сущностей удаляем
-             * физические блоки.
-             */
             for (Block block : blocks) {
                 block.setType(Material.AIR, false);
             }
@@ -242,67 +234,12 @@ public class ActiveShip {
                 rootEntity.remove();
             }
 
-            restoreOriginalBlocks(blocks);
+            restoreOriginalBlocks();
 
             throw ex;
         }
 
-        /*
-         * Root только для посадки игрока.
-         * Marker ArmorStand не имеет обычной видимой геометрии/хитбокса.
-         * Он всегда смотрит на yaw=0 и не вращается вместе с кораблем.
-         */
-        this.rootEntity = anchorLocation.getWorld().spawn(
-                pilotStart,
-                ArmorStand.class,
-                entity -> {
-                    entity.setInvisible(true);
-                    entity.setInvulnerable(true);
-                    entity.setGravity(false);
-                    entity.setMarker(true);
-                    entity.setSmall(true);
-                    entity.setBasePlate(false);
-                    entity.setPersistent(false);
-                    entity.setSilent(true);
-                    entity.setRotation(0.0f, 0.0f);
-                }
-        );
-
-        if (!rootEntity.addPassenger(pilot)) {
-            rootEntity.remove();
-            throw new IllegalStateException("Не удалось посадить игрока на штурвал");
-        }
-
-        /*
-         * Каждый BlockDisplay управляется непосредственно.
-         *
-         * setTeleportDuration(1):
-         * клиент интерполирует переход между двумя серверными позициями
-         * за один тик. Это дает непрерывное движение без мгновенных скачков.
-         *
-         * Матрица имеет interpolationDuration=1 для плавного поворота самого блока.
-         */
-        for (ShipBlockData block : originalBlocks) {
-            Location initialLocation = blockWorldLocation(block, anchorCenter, 0.0f);
-            Matrix4f matrix = createBlockMatrix(0.0f);
-
-            BlockDisplay display = anchorLocation.getWorld().spawn(
-                    initialLocation,
-                    BlockDisplay.class,
-                    entity -> {
-                        entity.setBlock(block.getBlockData().clone());
-                        entity.setPersistent(false);
-                        entity.setTeleportDuration(1);
-                        entity.setInterpolationDelay(0);
-                        entity.setInterpolationDuration(1);
-                    }
-            );
-
-            displayEntities.add(display);
-            displayLocations.add(initialLocation);
-            displayMatrices.add(matrix);
-            display.setTransformationMatrix(matrix);
-        }
+    }
 
         this.task = Bukkit.getScheduler().runTaskTimer(
                 plugin,
@@ -733,7 +670,8 @@ public class ActiveShip {
                     new RestoreEntry(
                             target,
                             restoredData,
-                            data.getStateSnapshot()
+                            data.getStateSnapshot(),
+                            data.getItems()
                     )
             );
         }
@@ -845,7 +783,7 @@ public class ActiveShip {
                 : pilot.getLocation().getY();
     }
 
-    private void restoreOriginalBlocks(Set<Block> blocks) {
+    private void restoreOriginalBlocks() {
         /*
          * При неудачной активации физические блоки должны остаться ровно
          * такими, какими они были до запуска.
@@ -892,13 +830,13 @@ public class ActiveShip {
         for (RestoreEntry entry : entries) {
             restoreContainerInventory(
                     entry.block(),
-                    findItemsForLocation(entry.block().getLocation())
+                    entry.items()
             );
         }
 
         /*
          * Дополнительная попытка через один тик нужна для TileEntity,
-         * которые Paper создает не мгновенно после установки блока.
+         * которые завершают инициализацию после установки блока.
          */
         if (!entries.isEmpty()) {
             Bukkit.getScheduler().runTaskLater(
@@ -911,42 +849,13 @@ public class ActiveShip {
                         for (RestoreEntry entry : entries) {
                             restoreContainerInventory(
                                     entry.block(),
-                                    findItemsForLocation(
-                                            entry.block().getLocation()
-                                    )
+                                    entry.items()
                             );
                         }
                     },
                     1L
             );
         }
-    }
-
-    private ItemStack[] findItemsForLocation(Location location) {
-        if (location == null || location.getWorld() == null) {
-            return null;
-        }
-
-        int x = location.getBlockX();
-        int y = location.getBlockY();
-        int z = location.getBlockZ();
-
-        for (ShipBlockData data : originalBlocks) {
-            Block target =
-                    anchorCenter.getWorld().getBlockAt(
-                            anchorCenter.getBlockX() + data.getLocalX(),
-                            anchorCenter.getBlockY() + data.getLocalY(),
-                            anchorCenter.getBlockZ() + data.getLocalZ()
-                    );
-
-            if (target.getX() == x
-                    && target.getY() == y
-                    && target.getZ() == z) {
-                return data.getItems();
-            }
-        }
-
-        return null;
     }
 
     private void restoreContainerInventory(
@@ -1046,7 +955,8 @@ public class ActiveShip {
     private record RestoreEntry(
             Block block,
             BlockData blockData,
-            BlockState snapshot
+            BlockState snapshot,
+            ItemStack[] items
     ) {
     }
 }
