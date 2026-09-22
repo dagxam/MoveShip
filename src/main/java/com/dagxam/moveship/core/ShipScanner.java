@@ -119,6 +119,10 @@ public final class ShipScanner {
 
         String name = type.name();
 
+        if ("CHAIN".equals(name)) {
+            return true;
+        }
+
         if (name.equals("CHAIN")) {
             return true;
         }
