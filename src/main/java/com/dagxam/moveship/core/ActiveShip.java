@@ -141,6 +141,15 @@ public class ActiveShip {
     private boolean leftPressed;
     private boolean rightPressed;
 
+    /*
+     * Диагностические флаги. Они не меняют физику, но позволяют точно
+     * установить по server.log, приходит ли W/A/S/D, блокирует ли collision
+     * движение и успешно ли перемещается carrier.
+     */
+    private boolean inputDiagnosticLogged;
+    private boolean collisionDiagnosticLogged;
+    private boolean teleportDiagnosticLogged;
+
     private BukkitTask task;
 
     private final Set<BP> submergedWake =
@@ -159,8 +168,8 @@ public class ActiveShip {
             BlockFace.SOUTH_EAST,
             BlockFace.SOUTH_SOUTH_EAST,
             BlockFace.SOUTH,
-            BlockFace.SOUTH_SOUTH_EAST,
             BlockFace.SOUTH_SOUTH_WEST,
+            BlockFace.SOUTH_WEST,
             BlockFace.WEST_SOUTH_WEST,
             BlockFace.WEST,
             BlockFace.WEST_NORTH_WEST,
@@ -490,6 +499,21 @@ public class ActiveShip {
                         1L,
                         1L
                 );
+
+        plugin.getLogger().info(
+                "Корабль активирован: блоков="
+                        + originalBlocks.size()
+                        + ", collision-boxes="
+                        + collisionModel.getCollisionBoxCount()
+                        + ", yaw="
+                        + String.format(java.util.Locale.ROOT, "%.2f", shipYaw)
+                        + ", core="
+                        + anchorLocation.getBlockX()
+                        + ","
+                        + anchorLocation.getBlockY()
+                        + ","
+                        + anchorLocation.getBlockZ()
+        );
     }
 
     /**
@@ -558,6 +582,25 @@ public class ActiveShip {
                 input.isLeft(),
                 input.isRight()
         );
+
+        if (!inputDiagnosticLogged
+                && (input.isForward()
+                || input.isBackward()
+                || input.isLeft()
+                || input.isRight())) {
+            inputDiagnosticLogged = true;
+
+            plugin.getLogger().info(
+                    "Управление кораблем получено: W="
+                            + input.isForward()
+                            + ", S="
+                            + input.isBackward()
+                            + ", A="
+                            + input.isLeft()
+                            + ", D="
+                            + input.isRight()
+            );
+        }
 
         updatePhysics();
 
@@ -639,12 +682,29 @@ public class ActiveShip {
                     );
 
             if (!blocked) {
+                collisionDiagnosticLogged = false;
+
                 anchorCenter =
                         desiredCenter;
 
                 shipYaw =
                         desiredYaw;
             } else {
+                if (wantsMove && !collisionDiagnosticLogged) {
+                    collisionDiagnosticLogged = true;
+
+                    plugin.getLogger().warning(
+                            "Корабль заблокирован collision: "
+                                    + "speed="
+                                    + String.format(java.util.Locale.ROOT, "%.4f", speed)
+                                    + ", boxes="
+                                    + collisionModel.getCollisionBoxCount()
+                                    + ", from="
+                                    + formatLocation(anchorCenter)
+                                    + ", to="
+                                    + formatLocation(desiredCenter)
+                    );
+                }
                 /*
                  * Если движение уперлось, все равно разрешаем чистый
                  * поворот на месте, если он безопасен.
@@ -704,9 +764,21 @@ public class ActiveShip {
                 0.0f
         );
 
-        helmAnchor.teleport(
-                acceptedHelmLocation
-        );
+        boolean teleported =
+                helmAnchor.teleport(
+                        acceptedHelmLocation
+                );
+
+        if (!teleported && !teleportDiagnosticLogged) {
+            teleportDiagnosticLogged = true;
+
+            plugin.getLogger().warning(
+                    "Не удалось телепортировать carrier корабля в "
+                            + formatLocation(acceptedHelmLocation)
+            );
+        } else if (teleported) {
+            teleportDiagnosticLogged = false;
+        }
 
         Vector carrierVelocity =
                 anchorCenter
@@ -896,6 +968,16 @@ public class ActiveShip {
         );
 
         return matrix;
+    }
+
+    private static String formatLocation(Location location) {
+        return String.format(
+                java.util.Locale.ROOT,
+                "(%.3f, %.3f, %.3f)",
+                location.getX(),
+                location.getY(),
+                location.getZ()
+        );
     }
 
     /**
