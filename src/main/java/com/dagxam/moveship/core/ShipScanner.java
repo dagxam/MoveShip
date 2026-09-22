@@ -119,6 +119,10 @@ public final class ShipScanner {
 
         String name = type.name();
 
+        if (name.equals("CHAIN")) {
+            return true;
+        }
+
         if (name.endsWith("_GLASS")
                 || name.endsWith("_GLASS_PANE")
                 || name.endsWith("_WOOL")
@@ -139,7 +143,6 @@ public final class ShipScanner {
                  GLASS_PANE,
                  TINTED_GLASS,
                  IRON_BARS,
-                 CHAIN,
                  LIGHTNING_ROD,
                  END_ROD,
                  BELL,
