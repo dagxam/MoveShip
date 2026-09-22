@@ -142,6 +142,23 @@ public final class ShipScanner {
         if (Tag.FLOWER_POTS.isTagged(type)) return true;
         if (Tag.CANDLES.isTagged(type)) return true;
 
+        /*
+         * Любой блок, который реально излучает свет, должен ехать
+         * вместе с кораблем: лампы, фонари, факелы, светящиеся блоки
+         * и новые варианты Minecraft/Paper.
+         *
+         * Здесь нет проверки type.isSolid(), поэтому обычная земля,
+         * камень, вода и воздух автоматически не захватываются.
+         */
+        try {
+            if (type.isBlock()
+                    && org.bukkit.Bukkit.createBlockData(type).getLightEmission() > 0) {
+                return true;
+            }
+        } catch (Exception ignored) {
+            // Нестандартный/неполный Material просто не учитываем.
+        }
+
         String name = type.name();
 
         if ("CHAIN".equals(name)) {
