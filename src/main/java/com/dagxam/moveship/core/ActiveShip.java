@@ -206,13 +206,15 @@ public class ActiveShip {
                 );
             }
 
-            if (snapshot instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory) {
-                /*
-                 * Только сохраняем независимую копию содержимого.
-                 * Живой инвентарь и snapshot пока не очищаем.
-                 */
-                items = deepCopy(tileInventory.getSnapshotInventory());
-            }
+            /*
+             * Сохраняем предметы любого функционального/редстоун-блока,
+             * который действительно содержит инвентарь или предметные слоты.
+             *
+             * Для Paper TileStateInventoryHolder используется snapshot,
+             * для остальных InventoryHolder — текущий Inventory,
+             * для костров — их четыре специальных слота.
+             */
+            items = captureBlockItems(snapshot);
 
             updateOriginalWaterLevel(block);
 
@@ -360,17 +362,7 @@ public class ActiveShip {
              * Сохранённый restoreSnapshot при этом остаётся неизменным.
              */
             for (Block block : blocks) {
-                BlockState removalState = block.getState(true);
-
-                if (removalState
-                        instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory) {
-                    tileInventory.getSnapshotInventory().clear();
-                    tileInventory.update(true, false);
-                } else if (removalState instanceof Container container) {
-                    container.getInventory().clear();
-                    container.update(true, false);
-                }
-
+                clearBlockItemsBeforeRemoval(block);
                 block.setType(Material.AIR, false);
             }
 
@@ -1390,43 +1382,138 @@ public class ActiveShip {
         }
 
         /*
-         * Сундуки, бочки, печи, коптильни и плавильни являются Container.
-         * Восстанавливаем именно их живой Inventory, а не только snapshot.
+         * Обычные сундуки, бочки, печи, воронки, раздатчики, выбрасыватели,
+         * крафтеры, варочные стойки, шалкеры и другие Container.
          */
         if (block.getState() instanceof Container container) {
-            Inventory inventory = container.getInventory();
-            inventory.clear();
-
-            for (int i = 0; i < Math.min(items.length, inventory.getSize()); i++) {
-                ItemStack item = items[i];
-
-                if (item != null) {
-                    inventory.setItem(i, item.clone());
-                }
-            }
-
+            setInventoryItems(
+                    container.getInventory(),
+                    items
+            );
             container.update(true, false);
             return;
         }
 
         /*
-         * Запасной путь для Paper TileStateInventoryHolder, который не является
-         * обычным Container.
+         * Остальные Paper TileStateInventoryHolder:
+         * chiseled bookshelf, decorated pot, jukebox, lectern, shelf и т.п.
          */
         if (block.getState()
                 instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory) {
-            Inventory inventory = tileInventory.getInventory();
-            inventory.clear();
+            setInventoryItems(
+                    tileInventory.getInventory(),
+                    items
+            );
+            tileInventory.update(true, false);
+            return;
+        }
 
-            for (int i = 0; i < Math.min(items.length, inventory.getSize()); i++) {
-                ItemStack item = items[i];
+        /*
+         * Запасной путь для блоков, которые являются InventoryHolder,
+         * но не TileStateInventoryHolder.
+         */
+        if (block.getState() instanceof org.bukkit.inventory.InventoryHolder holder) {
+            setInventoryItems(
+                    holder.getInventory(),
+                    items
+            );
 
-                if (item != null) {
-                    inventory.setItem(i, item.clone());
+            if (block.getState() instanceof BlockState state) {
+                state.update(true, false);
+            }
+            return;
+        }
+
+        /*
+         * У костра предметные слоты не представлены Inventory API.
+         */
+        if (block.getState() instanceof org.bukkit.block.Campfire campfire) {
+            for (int i = 0; i < Math.min(items.length, campfire.getSize()); i++) {
+                ItemStack item = items[i] == null ? null : items[i].clone();
+                campfire.setItem(i, item);
+            }
+            campfire.update(true, false);
+        }
+    }
+
+    /**
+     * Унифицированно сохраняет предметные слоты блока при сканировании.
+     */
+    private static ItemStack[] captureBlockItems(BlockState state) {
+        if (state instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory) {
+            return deepCopy(tileInventory.getSnapshotInventory());
+        }
+
+        if (state instanceof org.bukkit.inventory.InventoryHolder holder) {
+            return deepCopy(holder.getInventory());
+        }
+
+        if (state instanceof org.bukkit.block.Campfire campfire) {
+            ItemStack[] items = new ItemStack[campfire.getSize()];
+
+            for (int i = 0; i < items.length; i++) {
+                ItemStack item = campfire.getItem(i);
+
+                if (item != null && !item.getType().isAir()) {
+                    items[i] = item.clone();
                 }
             }
 
+            return items;
+        }
+
+        return null;
+    }
+
+    /**
+     * Перед удалением очищает предметы из актуального состояния блока,
+     * чтобы setType(AIR) не породил ItemEntity.
+     */
+    private static void clearBlockItemsBeforeRemoval(Block block) {
+        if (block == null) {
+            return;
+        }
+
+        BlockState state = block.getState(true);
+
+        if (state instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory) {
+            tileInventory.getSnapshotInventory().clear();
             tileInventory.update(true, false);
+            return;
+        }
+
+        if (state instanceof org.bukkit.inventory.InventoryHolder holder) {
+            holder.getInventory().clear();
+
+            if (state instanceof BlockState blockState) {
+                blockState.update(true, false);
+            }
+            return;
+        }
+
+        if (state instanceof org.bukkit.block.Campfire campfire) {
+            for (int i = 0; i < campfire.getSize(); i++) {
+                campfire.setItem(i, null);
+            }
+            campfire.update(true, false);
+        }
+    }
+
+    /**
+     * Заполняет инвентарь сохранёнными предметами, каждый предмет клонируется.
+     */
+    private static void setInventoryItems(
+            Inventory inventory,
+            ItemStack[] items
+    ) {
+        inventory.clear();
+
+        for (int i = 0; i < Math.min(items.length, inventory.getSize()); i++) {
+            ItemStack item = items[i];
+
+            if (item != null && !item.getType().isAir()) {
+                inventory.setItem(i, item.clone());
+            }
         }
     }
 
