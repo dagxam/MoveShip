@@ -216,8 +216,14 @@ public final class ShipCollision {
             return false;
         }
 
+        /*
+         * Display-поворот MoveShip использует -deltaYaw.
+         * Collision обязана применять тот же мировой поворот,
+         * иначе после разворота физический корпус и визуальный корпус
+         * расходятся.
+         */
         double relativeYaw =
-                normalizeDelta(
+                -normalizeDelta(
                         yaw - referenceYaw
                 );
 
