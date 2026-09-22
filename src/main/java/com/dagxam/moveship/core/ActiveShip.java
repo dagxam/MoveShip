@@ -39,6 +39,21 @@ public class ActiveShip {
      */
     private ArmorStand rootEntity;
 
+    /**
+     * Отдельный carrier только для визуального корпуса.
+     *
+     * Игрок продолжает сидеть на rootEntity, а displayCarrier используется
+     * исключительно как транспорт для цепочки:
+     *
+     * displayCarrier -> displayRoot -> все BlockDisplay.
+     *
+     * Благодаря этому сами BlockDisplay больше не телепортируются каждый тик.
+     * Их движение получает клиент из пассажирской цепочки, а поворот идет
+     * только через transformation interpolation.
+     */
+    private ArmorStand displayCarrier;
+    private BlockDisplay displayRoot;
+
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
     private final List<Location> displayLocations = new ArrayList<>();
@@ -243,30 +258,99 @@ public class ActiveShip {
                 );
             }
 
+            /*
+             * Визуальный корпус живет в отдельной пассажирской цепочке.
+             * displayCarrier находится в точке anchorLocation, поэтому
+             * перемещение всей конструкции происходит одним движением
+             * carrier-а вместо отдельного teleport() для каждого блока.
+             */
+            this.displayCarrier =
+                    anchorLocation.getWorld().spawn(
+                            anchorLocation,
+                            ArmorStand.class,
+                            entity -> {
+                                entity.setInvisible(true);
+                                entity.setInvulnerable(true);
+                                entity.setGravity(false);
+                                entity.setMarker(true);
+                                entity.setSmall(true);
+                                entity.setBasePlate(false);
+                                entity.setPersistent(false);
+                                entity.setSilent(true);
+                                entity.setRotation(0.0f, 0.0f);
+                            }
+                    );
+
+            this.displayRoot =
+                    anchorLocation.getWorld().spawn(
+                            anchorLocation,
+                            BlockDisplay.class,
+                            entity -> {
+                                entity.setBlock(
+                                        Material.AIR.createBlockData()
+                                );
+                                entity.setPersistent(false);
+                                entity.setTeleportDuration(0);
+                                entity.setInterpolationDelay(0);
+                                entity.setInterpolationDuration(2);
+                                entity.setViewRange(64.0f);
+                                entity.setGravity(false);
+                            }
+                    );
+
+            if (!displayCarrier.addPassenger(displayRoot)) {
+                throw new IllegalStateException(
+                        "Не удалось создать carrier для корпуса корабля"
+                );
+            }
+
             for (ShipBlockData block : originalBlocks) {
-                Location initialLocation =
-                        blockWorldLocation(block, anchorCenter, 0.0f);
-                Matrix4f matrix = createBlockMatrix(0.0f);
+                /*
+                 * Положение блока теперь задается LOCAL transformation-ом
+                 * относительно displayRoot. World-coordinate teleport() больше
+                 * не нужен.
+                 */
+                Matrix4f matrix =
+                        createBlockMatrix(
+                                block.getLocalX(),
+                                block.getLocalY(),
+                                block.getLocalZ(),
+                                0.0f
+                        );
 
                 BlockDisplay display =
                         anchorLocation.getWorld().spawn(
-                                initialLocation,
+                                anchorLocation,
                                 BlockDisplay.class,
                                 entity -> {
                                     entity.setBlock(
                                             block.getBlockData().clone()
                                     );
                                     entity.setPersistent(false);
-                                    entity.setTeleportDuration(1);
+
+                                    /*
+                                     * Положение приходит через passenger chain.
+                                     * Teleport interpolation здесь не используется,
+                                     * иначе два интерполятора начинают конкурировать.
+                                     */
+                                    entity.setTeleportDuration(0);
                                     entity.setInterpolationDelay(0);
                                     entity.setInterpolationDuration(2);
+                                    entity.setViewRange(64.0f);
+                                    entity.setGravity(false);
                                 }
                         );
 
                 displayEntities.add(display);
-                displayLocations.add(initialLocation);
                 displayMatrices.add(matrix);
+
                 display.setTransformationMatrix(matrix);
+
+                if (!displayRoot.addPassenger(display)) {
+                    throw new IllegalStateException(
+                            "Не удалось прикрепить блок корпуса к displayRoot"
+                    );
+                }
             }
 
             /*
@@ -320,6 +404,16 @@ public class ActiveShip {
             displayEntities.clear();
             displayLocations.clear();
             displayMatrices.clear();
+
+            if (displayRoot != null && displayRoot.isValid()) {
+                displayRoot.eject();
+                displayRoot.remove();
+            }
+
+            if (displayCarrier != null && displayCarrier.isValid()) {
+                displayCarrier.eject();
+                displayCarrier.remove();
+            }
 
             if (rootEntity != null && rootEntity.isValid()) {
                 rootEntity.eject();
@@ -417,9 +511,11 @@ public class ActiveShip {
 
         if (moved) {
             /*
-             * Корпус обновляется КАЖДЫЙ тик:
-             * это одновременно перемещение и вращение.
+             * Весь корпус двигается одним carrier-ом.
+             * Это ключевое отличие от старой схемы, где каждый BlockDisplay
+             * отдельно получал teleport() каждый тик.
              */
+            updateDisplayCarrier();
             updateDisplays();
         }
 
@@ -536,7 +632,7 @@ public class ActiveShip {
              * Дополнительный position-sync пакет не заменяет teleport/velocity:
              * он только не даёт клиентскому entity tracker накапливать задержку.
              */
-            sendPositionSync(seat, seatVelocity);
+            sendPositionSync(rootEntity, seat, seatVelocity);
         } else {
             rootEntity.setVelocity(new Vector());
         }
@@ -637,12 +733,16 @@ public class ActiveShip {
     private static java.lang.reflect.Constructor<?> positionSyncVec3Constructor;
     private static java.lang.reflect.Constructor<?> positionSyncPositionMoveRotationConstructor;
 
-    private void sendPositionSync(Location location, Vector velocity) {
+    private void sendPositionSync(
+            ArmorStand carrier,
+            Location location,
+            Vector velocity
+    ) {
         initializePositionSync();
 
         if (!positionSyncAvailable
-                || rootEntity == null
-                || !rootEntity.isValid()
+                || carrier == null
+                || !carrier.isValid()
                 || location == null) {
             return;
         }
@@ -658,7 +758,7 @@ public class ActiveShip {
             positionSyncModifierWrite.invoke(
                     modifier,
                     0,
-                    rootEntity.getEntityId()
+                    carrier.getEntityId()
             );
 
             Object position = positionSyncVec3Constructor.newInstance(
@@ -691,7 +791,7 @@ public class ActiveShip {
                     positionMoveRotation
             );
 
-            for (Player tracked : rootEntity.getTrackedBy()) {
+            for (Player tracked : carrier.getTrackedBy()) {
                 if (tracked != null && tracked.isOnline()) {
                     positionSyncSendPacket.invoke(
                             positionSyncProtocolManager,
@@ -817,12 +917,63 @@ public class ActiveShip {
         }
     }
 
+    /**
+     * Перемещает единый carrier визуального корпуса в текущую позицию anchor.
+     *
+     * У carrier фиксирован yaw=0. Реальный поворот корабля не записываем в
+     * entity rotation — он полностью находится в display transformation.
+     */
+    private void updateDisplayCarrier() {
+        if (displayCarrier == null
+                || !displayCarrier.isValid()
+                || anchorCenter == null
+                || anchorCenter.getWorld() == null) {
+            return;
+        }
+
+        Location current = displayCarrier.getLocation();
+        Location target = anchorCenter.clone().add(-0.5, 0.0, -0.5);
+
+        double dx = target.getX() - current.getX();
+        double dy = target.getY() - current.getY();
+        double dz = target.getZ() - current.getZ();
+
+        if (Math.abs(dx) < 0.000001
+                && Math.abs(dy) < 0.000001
+                && Math.abs(dz) < 0.000001) {
+            displayCarrier.setVelocity(new Vector());
+            return;
+        }
+
+        target.setYaw(0.0f);
+        target.setPitch(0.0f);
+
+        displayCarrier.teleport(target);
+
+        Vector velocity = new Vector(dx, dy, dz);
+        displayCarrier.setVelocity(velocity);
+
+        /*
+         * Ежетиковая синхронизация применяется именно к display carrier,
+         * а не к каждому блоку. Это существенно уменьшает количество
+         * сетевых обновлений и устраняет накопление задержки.
+         */
+        sendPositionSync(displayCarrier, target, velocity);
+    }
+
     private void updateDisplays() {
         double delta = Math.toRadians(shipYaw - initialYaw);
-        double cos = Math.cos(delta);
-        double sin = Math.sin(delta);
-
         boolean rotationChanged = Math.abs(currentTurn) > 0.00001f;
+
+        /*
+         * На прямой движение получает весь корпус через displayCarrier.
+         * Transformation меняем только при повороте, чтобы не сбрасывать
+         * клиентскую интерполяцию на каждом тике движения.
+         */
+        if (!rotationChanged) {
+            return;
+        }
+
         float rotation = (float) -delta;
 
         for (int i = 0; i < originalBlocks.size(); i++) {
@@ -833,62 +984,35 @@ public class ActiveShip {
             }
 
             ShipBlockData block = originalBlocks.get(i);
+            Matrix4f matrix = displayMatrices.get(i);
 
-            double centerX =
-                    anchorCenter.getX()
-                            + block.getLocalX() * cos
-                            - block.getLocalZ() * sin;
+            matrix.identity()
+                    .translate(0.5f, 0.5f, 0.5f)
+                    .rotateY(rotation)
+                    .translate(-0.5f, -0.5f, -0.5f)
+                    .translate(
+                            block.getLocalX(),
+                            block.getLocalY(),
+                            block.getLocalZ()
+                    );
 
-            double centerY =
-                    anchorCenter.getY()
-                            + block.getLocalY()
-                            + 0.5;
-
-            double centerZ =
-                    anchorCenter.getZ()
-                            + block.getLocalX() * sin
-                            + block.getLocalZ() * cos;
-
-            Location location = displayLocations.get(i);
-
-            location.setX(centerX - 0.5);
-            location.setY(centerY - 0.5);
-            location.setZ(centerZ - 0.5);
-            location.setYaw(0.0f);
-            location.setPitch(0.0f);
-
-            /*
-             * Один teleport за тик. teleportDuration=1 позволяет клиенту
-             * плавно интерполировать поступательное движение.
-             */
-            display.teleport(location);
-
-            /*
-             * Не меняем Transformation во время обычного прямолинейного
-             * движения. Частая запись transformation сбрасывает клиентскую
-             * интерполяцию и именно из-за этого движение начинает выглядеть
-             * рывками.
-             */
-            if (rotationChanged) {
-                Matrix4f matrix = displayMatrices.get(i);
-
-                matrix.identity()
-                        .translate(0.5f, 0.5f, 0.5f)
-                        .rotateY(rotation)
-                        .translate(-0.5f, -0.5f, -0.5f);
-
-                display.setInterpolationDelay(0);
-                display.setInterpolationDuration(2);
-                display.setTransformationMatrix(matrix);
-            }
+            display.setInterpolationDelay(0);
+            display.setInterpolationDuration(2);
+            display.setTransformationMatrix(matrix);
         }
     }
 
-    private static Matrix4f createBlockMatrix(float rotation) {
+    private static Matrix4f createBlockMatrix(
+            int localX,
+            int localY,
+            int localZ,
+            float rotation
+    ) {
         return new Matrix4f()
                 .translate(0.5f, 0.5f, 0.5f)
                 .rotateY(rotation)
-                .translate(-0.5f, -0.5f, -0.5f);
+                .translate(-0.5f, -0.5f, -0.5f)
+                .translate(localX, localY, localZ);
     }
 
     private static Location blockWorldLocation(
@@ -1122,6 +1246,16 @@ public class ActiveShip {
         displayEntities.clear();
         displayLocations.clear();
         displayMatrices.clear();
+
+        if (displayRoot != null && displayRoot.isValid()) {
+            displayRoot.eject();
+            displayRoot.remove();
+        }
+
+        if (displayCarrier != null && displayCarrier.isValid()) {
+            displayCarrier.eject();
+            displayCarrier.remove();
+        }
 
         if (rootEntity.isValid()) {
             rootEntity.remove();
