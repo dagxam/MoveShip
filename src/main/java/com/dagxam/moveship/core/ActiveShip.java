@@ -43,6 +43,13 @@ public class ActiveShip {
     private final List<Location> displayLocations = new ArrayList<>();
     private final List<Matrix4f> displayMatrices = new ArrayList<>();
 
+    /**
+     * Светящиеся блоки корабля. BlockDisplay отвечает за внешний вид,
+     * а временные LIGHT-блоки ниже поддерживают настоящее освещение мира.
+     */
+    private final List<LightSource> lightSources = new ArrayList<>();
+    private final Set<BlockKey> activeLightCells = new HashSet<>();
+
     /*
      * Скорость в блоках за тик.
      * Управление сделано через target -> current, поэтому изменение скорости
@@ -142,6 +149,18 @@ public class ActiveShip {
             BlockData blockData = block.getBlockData().clone();
             BlockState snapshot = block.getState(true);
             ItemStack[] items = null;
+
+            int lightEmission = blockData.getLightEmission();
+            if (lightEmission > 0) {
+                lightSources.add(
+                        new LightSource(
+                                localX,
+                                localY,
+                                localZ,
+                                lightEmission
+                        )
+                );
+            }
 
             if (snapshot instanceof Container container) {
                 /*
@@ -253,6 +272,13 @@ public class ActiveShip {
             for (Block block : blocks) {
                 block.setType(Material.AIR, false);
             }
+
+            /*
+             * После удаления физического корпуса устанавливаем реальные
+             * источники освещения в тех же клетках, где находятся фонари
+             * и светящие блоки. Они невидимы и не участвуют в коллизии.
+             */
+            updateLightBlocks();
         } catch (RuntimeException ex) {
             for (BlockDisplay display : displayEntities) {
                 if (display != null && display.isValid()) {
@@ -363,6 +389,14 @@ public class ActiveShip {
              * это одновременно перемещение и вращение.
              */
             updateDisplays();
+        }
+
+        /*
+         * Свет переносится независимо от того, был ли этот тик только
+         * поворотом, движением или одновременно обоими.
+         */
+        if (moved) {
+            updateLightBlocks();
         }
     }
 
@@ -744,6 +778,12 @@ public class ActiveShip {
         restoreContainerInventories(entries);
 
         /*
+         * Убираем виртуальные источники света до окончательного восстановления
+         * физических блоков, чтобы временный LIGHT никогда не оставался в мире.
+         */
+        clearLightBlocks();
+
+        /*
          * Игрок возвращается на корабль, сохраняя собственный yaw/pitch.
          */
         double safeY =
@@ -945,6 +985,171 @@ public class ActiveShip {
         return items;
     }
 
+    /**
+     * Обновляет реальные невидимые источники света в соответствии
+     * с текущей позицией и углом виртуального корабля.
+     */
+    private void updateLightBlocks() {
+        if (lightSources.isEmpty()
+                || anchorCenter == null
+                || anchorCenter.getWorld() == null) {
+            return;
+        }
+
+        double delta = Math.toRadians(shipYaw - initialYaw);
+        double cos = Math.cos(delta);
+        double sin = Math.sin(delta);
+
+        java.util.Map<BlockKey, Integer> desired = new java.util.HashMap<>();
+        java.util.Map<BlockKey, Boolean> desiredWaterlogged = new java.util.HashMap<>();
+
+        for (LightSource source : lightSources) {
+            int x = floorToInt(
+                    anchorCenter.getX()
+                            + source.localX() * cos
+                            - source.localZ() * sin
+            );
+
+            int y = anchorCenter.getBlockY()
+                    + source.localY();
+
+            int z = floorToInt(
+                    anchorCenter.getZ()
+                            + source.localX() * sin
+                            + source.localZ() * cos
+            );
+
+            BlockKey key = new BlockKey(x, y, z);
+
+            /*
+             * Если несколько источников после поворота попали в одну клетку,
+             * оставляем максимальную яркость.
+             */
+            desired.merge(
+                    key,
+                    source.level(),
+                    Math::max
+            );
+        }
+
+        /*
+         * Сначала убираем LIGHT, которые остались в старых координатах.
+         * Если старый LIGHT был waterlogged, возвращаем воду.
+         */
+        for (BlockKey old : new HashSet<>(activeLightCells)) {
+            if (desired.containsKey(old)) {
+                continue;
+            }
+
+            Block block = anchorCenter.getWorld().getBlockAt(
+                    old.x(),
+                    old.y(),
+                    old.z()
+            );
+
+            if (block.getType() == Material.LIGHT) {
+                org.bukkit.block.data.type.Light light =
+                        (org.bukkit.block.data.type.Light)
+                                block.getBlockData();
+
+                block.setType(
+                        light.isWaterlogged()
+                                ? Material.WATER
+                                : Material.AIR,
+                        false
+                );
+            }
+        }
+
+        activeLightCells.clear();
+
+        /*
+         * Затем ставим/обновляем новые источники света.
+         */
+        for (java.util.Map.Entry<BlockKey, Integer> entry : desired.entrySet()) {
+            BlockKey key = entry.getKey();
+            Block block = anchorCenter.getWorld().getBlockAt(
+                    key.x(),
+                    key.y(),
+                    key.z()
+            );
+
+            int wantedLevel = Math.max(1, Math.min(15, entry.getValue()));
+
+            if (block.getType() != Material.LIGHT) {
+                org.bukkit.block.data.type.Light light =
+                        (org.bukkit.block.data.type.Light)
+                                Material.LIGHT.createBlockData();
+
+                light.setLevel(wantedLevel);
+
+                /*
+                 * Световые блоки можно размещать внутри воды без замены
+                 * водной среды: Light поддерживает waterlogged.
+                 */
+                light.setWaterlogged(block.isLiquid());
+
+                block.setBlockData(light, false);
+            } else {
+                org.bukkit.block.data.type.Light light =
+                        (org.bukkit.block.data.type.Light)
+                                block.getBlockData().clone();
+
+                boolean changed = false;
+
+                if (light.getLevel() != wantedLevel) {
+                    light.setLevel(wantedLevel);
+                    changed = true;
+                }
+
+                if (light.isWaterlogged() != block.isLiquid()) {
+                    light.setWaterlogged(block.isLiquid());
+                    changed = true;
+                }
+
+                if (changed) {
+                    block.setBlockData(light, false);
+                }
+            }
+
+            activeLightCells.add(key);
+        }
+    }
+
+    /**
+     * Удаляет все временные LIGHT-блоки при остановке/откате активации.
+     */
+    private void clearLightBlocks() {
+        if (activeLightCells.isEmpty()
+                || anchorCenter == null
+                || anchorCenter.getWorld() == null) {
+            return;
+        }
+
+        for (BlockKey key : new HashSet<>(activeLightCells)) {
+            Block block = anchorCenter.getWorld().getBlockAt(
+                    key.x(),
+                    key.y(),
+                    key.z()
+            );
+
+            if (block.getType() == Material.LIGHT) {
+                org.bukkit.block.data.type.Light light =
+                        (org.bukkit.block.data.type.Light)
+                                block.getBlockData();
+
+                block.setType(
+                        light.isWaterlogged()
+                                ? Material.WATER
+                                : Material.AIR,
+                        false
+                );
+            }
+        }
+
+        activeLightCells.clear();
+    }
+
     private void stopInternal() {
         if (task != null) {
             task.cancel();
@@ -999,6 +1204,14 @@ public class ActiveShip {
     }
 
     private record BlockKey(int x, int y, int z) {
+    }
+
+    private record LightSource(
+            int localX,
+            int localY,
+            int localZ,
+            int level
+    ) {
     }
 
     private record RestoreEntry(
