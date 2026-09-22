@@ -1,7 +1,6 @@
 package com.dagxam.moveship.core;
 
 import org.bukkit.Bukkit;
-import org.bukkit.Input;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.World;
@@ -277,14 +276,6 @@ public class ActiveShip {
             return;
         }
 
-        Input input = pilot.getCurrentInput();
-        setInput(
-                input.isForward(),
-                input.isBackward(),
-                input.isLeft(),
-                input.isRight()
-        );
-
         updatePhysics();
 
         float nextYaw = shipYaw + currentTurn;
@@ -439,6 +430,7 @@ public class ActiveShip {
         double cos = Math.cos(delta);
         double sin = Math.sin(delta);
 
+        boolean rotationChanged = Math.abs(currentTurn) > 0.00001f;
         float rotation = (float) -delta;
 
         for (int i = 0; i < originalBlocks.size(); i++) {
@@ -467,24 +459,36 @@ public class ActiveShip {
 
             Location location = displayLocations.get(i);
 
-            /*
-             * BlockDisplay location — нижний/левый/задний угол блока,
-             * поэтому от центра отнимаем 0.5 по каждой оси.
-             */
             location.setX(centerX - 0.5);
             location.setY(centerY - 0.5);
             location.setZ(centerZ - 0.5);
+            location.setYaw(0.0f);
+            location.setPitch(0.0f);
 
+            /*
+             * Один teleport за тик. teleportDuration=1 позволяет клиенту
+             * плавно интерполировать поступательное движение.
+             */
             display.teleport(location);
 
-            Matrix4f matrix = displayMatrices.get(i);
+            /*
+             * Не меняем Transformation во время обычного прямолинейного
+             * движения. Частая запись transformation сбрасывает клиентскую
+             * интерполяцию и именно из-за этого движение начинает выглядеть
+             * рывками.
+             */
+            if (rotationChanged) {
+                Matrix4f matrix = displayMatrices.get(i);
 
-            matrix.identity()
-                    .translate(0.5f, 0.5f, 0.5f)
-                    .rotateY(rotation)
-                    .translate(-0.5f, -0.5f, -0.5f);
+                matrix.identity()
+                        .translate(0.5f, 0.5f, 0.5f)
+                        .rotateY(rotation)
+                        .translate(-0.5f, -0.5f, -0.5f);
 
-            display.setTransformationMatrix(matrix);
+                display.setInterpolationDelay(0);
+                display.setInterpolationDuration(1);
+                display.setTransformationMatrix(matrix);
+            }
         }
     }
 
@@ -545,11 +549,6 @@ public class ActiveShip {
         double cos = Math.cos(delta);
         double sin = Math.sin(delta);
 
-        /*
-         * Из-за округления при плавном повороте несколько корабельных
-         * координат могут попасть в одну и ту же клетку. Дубликаты
-         * не проверяем повторно.
-         */
         Set<BlockKey> checked = new HashSet<>();
 
         for (ShipBlockData block : originalBlocks) {
@@ -561,38 +560,26 @@ public class ActiveShip {
                     block.getLocalX() * sin
                             + block.getLocalZ() * cos;
 
-            int targetBlockX =
-                    floorToInt(target.getX() + rotatedX);
-            int targetBlockY =
-                    target.getBlockY() + block.getLocalY();
-            int targetBlockZ =
-                    floorToInt(target.getZ() + rotatedZ);
+            int x = floorToInt(target.getX() + rotatedX);
+            int y = target.getBlockY() + block.getLocalY();
+            int z = floorToInt(target.getZ() + rotatedZ);
 
-            if (targetBlockY < world.getMinHeight()
-                    || targetBlockY >= world.getMaxHeight()) {
+            if (y < world.getMinHeight()
+                    || y >= world.getMaxHeight()) {
                 return false;
             }
 
-            if (!checked.add(
-                    new BlockKey(
-                            targetBlockX,
-                            targetBlockY,
-                            targetBlockZ
-                    )
-            )) {
+            BlockKey key = new BlockKey(x, y, z);
+
+            if (!checked.add(key)) {
                 continue;
             }
 
-            Block worldBlock =
-                    world.getBlockAt(
-                            targetBlockX,
-                            targetBlockY,
-                            targetBlockZ
-                    );
+            Block worldBlock = world.getBlockAt(x, y, z);
 
             /*
-             * Вода, воздух и прочие не-solid блоки не блокируют движение.
-             * Solid блок в целевой клетке блокирует корабль.
+             * Вода и воздух не являются препятствиями.
+             * Коллизию учитываем только по реально занимаемой целевой клетке.
              */
             if (worldBlock.getType().isSolid()) {
                 return false;
