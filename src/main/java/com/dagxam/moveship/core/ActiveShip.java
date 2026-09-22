@@ -201,17 +201,19 @@ public class ActiveShip {
 
             if (snapshot instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory) {
                 /*
-                 * В Paper контейнеры и другие inventory TileState используют
-                 * отдельный snapshot-инвентарь. Именно его нужно очистить
-                 * перед setType(AIR), иначе Bukkit/Paper может выбросить
-                 * сохранённые предметы в мир при удалении блока.
+                 * Сохраняем содержимое ОТДЕЛЬНО от BlockState.
                  *
-                 * Сначала делаем независимую копию содержимого для корабля,
-                 * затем очищаем snapshot и записываем пустое состояние
-                 * обратно в мир.
+                 * После этого очищаем именно snapshot-инвентарь, который Paper
+                 * использует при записи TileEntity. Так при setType(AIR)
+                 * контейнер уже не содержит предметов, которые Minecraft может
+                 * выбросить в мир.
                  */
                 items = deepCopy(tileInventory.getSnapshotInventory());
-                tileInventory.getSnapshotInventory().clear();
+
+                ItemStack[] emptyContents =
+                        new ItemStack[tileInventory.getSnapshotInventory().getSize()];
+
+                tileInventory.getSnapshotInventory().setContents(emptyContents);
                 tileInventory.update(true, false);
             }
 
@@ -354,29 +356,9 @@ public class ActiveShip {
             }
 
             /*
-             * Контейнеры сначала очищаем от живого инвентаря.
-             * Содержимое уже полностью сохранено в ShipBlockData.
-             * Это гарантирует, что при снятии сундука/бочки/печки
-             * Minecraft/Paper не создаст выпавшие ItemEntity.
+             * Инвентари уже очищены через Paper snapshot-инвентарь выше.
+             * Дополнительный clear живого Container здесь не выполняем.
              */
-            for (ShipBlockData data : originalBlocks) {
-                if (data.getItems() == null) {
-                    continue;
-                }
-
-                Block containerBlock =
-                        anchorLocation.getWorld().getBlockAt(
-                                anchorLocation.getBlockX() + data.getLocalX(),
-                                anchorLocation.getBlockY() + data.getLocalY(),
-                                anchorLocation.getBlockZ() + data.getLocalZ()
-                        );
-
-                if (containerBlock.getState() instanceof Container container) {
-                    container.getInventory().clear();
-                    container.update(true, false);
-                }
-            }
-
             for (Block block : blocks) {
                 block.setType(Material.AIR, false);
             }
@@ -1392,25 +1374,49 @@ public class ActiveShip {
             Block block,
             ItemStack[] items
     ) {
-        if (block == null
-                || items == null
-                || !(block.getState()
-                instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory)) {
+        if (block == null || items == null) {
             return;
         }
 
-        Inventory inventory = tileInventory.getInventory();
-        inventory.clear();
+        /*
+         * Сундуки, бочки, печи, коптильни и плавильни являются Container.
+         * Восстанавливаем именно их живой Inventory, а не только snapshot.
+         */
+        if (block.getState() instanceof Container container) {
+            Inventory inventory = container.getInventory();
+            inventory.clear();
 
-        for (int i = 0; i < Math.min(items.length, inventory.getSize()); i++) {
-            ItemStack item = items[i];
+            for (int i = 0; i < Math.min(items.length, inventory.getSize()); i++) {
+                ItemStack item = items[i];
 
-            if (item != null) {
-                inventory.setItem(i, item.clone());
+                if (item != null) {
+                    inventory.setItem(i, item.clone());
+                }
             }
+
+            container.update(true, false);
+            return;
         }
 
-        tileInventory.update(true, false);
+        /*
+         * Запасной путь для Paper TileStateInventoryHolder, который не является
+         * обычным Container.
+         */
+        if (block.getState()
+                instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory) {
+            Inventory inventory = tileInventory.getInventory();
+            inventory.clear();
+
+            for (int i = 0; i < Math.min(items.length, inventory.getSize()); i++) {
+                ItemStack item = items[i];
+
+                if (item != null) {
+                    inventory.setItem(i, item.clone());
+                }
+            }
+
+            tileInventory.update(true, false);
+        }
     }
 
     private static ItemStack[] deepCopy(Inventory inventory) {
