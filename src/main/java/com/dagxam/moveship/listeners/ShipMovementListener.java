@@ -28,10 +28,10 @@ public class ShipMovementListener implements Listener {
         Input input = event.getInput();
 
         ship.setInput(
-            input.isForward(),
-            input.isBackward(),
-            input.isLeft(),
-            input.isRight()
+                input.isForward(),
+                input.isBackward(),
+                input.isLeft(),
+                input.isRight()
         );
     }
 
