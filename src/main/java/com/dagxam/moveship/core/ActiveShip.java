@@ -679,12 +679,35 @@ public class ActiveShip {
          * смещения anchorCenter.
          */
         /*
-         * Больше НЕ телепортируем carrier каждый тик.
+         * Физическое положение carrier должно быть установлено напрямую.
          *
-         * Вместо этого передаем ему фактическое смещение за один тик как
-         * velocity в блоках/тик. Paper Entity API задает velocity именно
-         * в этой единице.
+         * Это важная часть схемы BlockShips:
+         * 1) физика вычисляет принятую точку;
+         * 2) carrier перемещается в эту точку;
+         * 3) velocity получает фактическое смещение за тик.
+         *
+         * Velocity здесь не является единственным механизмом перемещения.
+         * Он нужен для корректной синхронизации/предсказания клиента.
          */
+        Location acceptedHelmLocation =
+                anchorCenter.clone()
+                        .add(
+                                0.0,
+                                HELM_VERTICAL_OFFSET,
+                                0.0
+                        );
+
+        acceptedHelmLocation.setYaw(
+                initialYaw
+        );
+        acceptedHelmLocation.setPitch(
+                0.0f
+        );
+
+        helmAnchor.teleport(
+                acceptedHelmLocation
+        );
+
         Vector carrierVelocity =
                 anchorCenter
                         .toVector()
