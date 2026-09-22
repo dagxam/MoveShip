@@ -239,8 +239,6 @@ public class ActiveShip {
             throw ex;
         }
 
-    }
-
         this.task = Bukkit.getScheduler().runTaskTimer(
                 plugin,
                 this::tick,
