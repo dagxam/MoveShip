@@ -184,7 +184,14 @@ public class ActiveShip {
             int localZ = block.getZ() - anchorLocation.getBlockZ();
 
             BlockData blockData = block.getBlockData().clone();
+
+            /*
+             * Этот snapshot не изменяем. Он хранит исходное состояние блока
+             * для последующего полного восстановления.
+             */
             BlockState snapshot = block.getState(true);
+            BlockState restoreSnapshot = snapshot.copy(block.getLocation());
+
             ItemStack[] items = null;
 
             int lightEmission = blockData.getLightEmission();
@@ -201,20 +208,10 @@ public class ActiveShip {
 
             if (snapshot instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory) {
                 /*
-                 * Сохраняем содержимое ОТДЕЛЬНО от BlockState.
-                 *
-                 * После этого очищаем именно snapshot-инвентарь, который Paper
-                 * использует при записи TileEntity. Так при setType(AIR)
-                 * контейнер уже не содержит предметов, которые Minecraft может
-                 * выбросить в мир.
+                 * Только сохраняем независимую копию содержимого.
+                 * Живой инвентарь и snapshot пока не очищаем.
                  */
                 items = deepCopy(tileInventory.getSnapshotInventory());
-
-                ItemStack[] emptyContents =
-                        new ItemStack[tileInventory.getSnapshotInventory().getSize()];
-
-                tileInventory.getSnapshotInventory().setContents(emptyContents);
-                tileInventory.update(true, false);
             }
 
             updateOriginalWaterLevel(block);
@@ -225,7 +222,7 @@ public class ActiveShip {
                             localY,
                             localZ,
                             blockData,
-                            snapshot,
+                            restoreSnapshot,
                             items
                     )
             );
@@ -356,10 +353,24 @@ public class ActiveShip {
             }
 
             /*
-             * Инвентари уже очищены через Paper snapshot-инвентарь выше.
-             * Дополнительный clear живого Container здесь не выполняем.
+             * Непосредственно перед удалением берём свежий snapshot
+             * TileEntity и очищаем именно его. Это предотвращает выпадение
+             * предметов из сундуков, бочек и печей при setType(AIR).
+             *
+             * Сохранённый restoreSnapshot при этом остаётся неизменным.
              */
             for (Block block : blocks) {
+                BlockState removalState = block.getState(true);
+
+                if (removalState
+                        instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory) {
+                    tileInventory.getSnapshotInventory().clear();
+                    tileInventory.update(true, false);
+                } else if (removalState instanceof Container container) {
+                    container.getInventory().clear();
+                    container.update(true, false);
+                }
+
                 block.setType(Material.AIR, false);
             }
 
