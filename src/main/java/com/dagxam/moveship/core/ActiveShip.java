@@ -10,6 +10,7 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Container;
+import org.bukkit.block.Chest;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.structure.StructureRotation;
 import org.bukkit.entity.ArmorStand;
@@ -1382,7 +1383,26 @@ public class ActiveShip {
         }
 
         /*
-         * Обычные сундуки, бочки, печи, воронки, раздатчики, выбрасыватели,
+         * Сундук обрабатываем отдельно.
+         *
+         * У двойного сундука Container.getInventory() может представлять
+         * объединённый 54-слотовый инвентарь. Если восстановить обе половины
+         * через него, вторая половина начинает писать поверх первой.
+         *
+         * Chest.getBlockInventory() всегда возвращает именно половину,
+         * соответствующую конкретному блоку, поэтому содержимое левой и
+         * правой половин восстанавливается независимо и без перезаписи.
+         */
+        if (block.getState() instanceof Chest chest) {
+            setInventoryItems(
+                    chest.getBlockInventory(),
+                    items
+            );
+            return;
+        }
+
+        /*
+         * Обычные бочки, печи, воронки, раздатчики, выбрасыватели,
          * крафтеры, варочные стойки, шалкеры и другие Container.
          */
         if (block.getState() instanceof Container container) {
@@ -1440,6 +1460,16 @@ public class ActiveShip {
      * Унифицированно сохраняет предметные слоты блока при сканировании.
      */
     private static ItemStack[] captureBlockItems(BlockState state) {
+        /*
+         * Для сундука принципиально используем getBlockInventory().
+         * На snapshot-состоянии он возвращает именно содержимое этой половины
+         * сундука. Для двойного сундука это гарантирует отдельный снимок 27
+         * слотов каждой половины, а не общий объединённый инвентарь.
+         */
+        if (state instanceof Chest chest) {
+            return deepCopy(chest.getBlockInventory());
+        }
+
         if (state instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory) {
             return deepCopy(tileInventory.getSnapshotInventory());
         }
@@ -1475,6 +1505,16 @@ public class ActiveShip {
         }
 
         BlockState state = block.getState(true);
+
+        /*
+         * Для двойного сундука очищаем именно половину текущего блока.
+         * Работа через getSnapshotInventory() здесь могла затронуть не тот
+         * уровень инвентаря при объединённом сундуке.
+         */
+        if (state instanceof Chest chest) {
+            chest.getBlockInventory().clear();
+            return;
+        }
 
         if (state instanceof io.papermc.paper.block.TileStateInventoryHolder tileInventory) {
             tileInventory.getSnapshotInventory().clear();
