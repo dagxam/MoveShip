@@ -8,6 +8,7 @@ import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.Lectern;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockPlaceEvent;
@@ -18,36 +19,75 @@ import org.bukkit.persistence.PersistentDataType;
 
 public class ShipControllerListener implements Listener {
 
-    @EventHandler
+    @EventHandler(
+            priority = EventPriority.HIGHEST,
+            ignoreCancelled = true
+    )
     public void onControllerPlace(BlockPlaceEvent event) {
         ItemStack itemInHand = event.getItemInHand();
-        if (itemInHand.getItemMeta() == null) return;
-        if (!itemInHand.getItemMeta().getPersistentDataContainer().has(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE)) {
+
+        if (itemInHand.getItemMeta() == null) {
+            return;
+        }
+
+        if (!itemInHand.getItemMeta()
+                .getPersistentDataContainer()
+                .has(
+                        MoveShipPlugin.CONTROLLER_KEY,
+                        PersistentDataType.BYTE
+                )) {
             return;
         }
 
         Block block = event.getBlockPlaced();
+
         if (block.getState() instanceof Lectern lectern) {
-            lectern.getPersistentDataContainer().set(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE, (byte) 1);
-            lectern.update();
-            event.getPlayer().sendMessage(Component.text("Ядро корабля установлено! Нажмите ПКМ для управления.", NamedTextColor.GREEN));
+            lectern.getPersistentDataContainer().set(
+                    MoveShipPlugin.CONTROLLER_KEY,
+                    PersistentDataType.BYTE,
+                    (byte) 1
+            );
+
+            lectern.update(true, false);
+
+            event.getPlayer().sendMessage(Component.text(
+                    "Ядро корабля установлено! Нажмите ПКМ для управления.",
+                    NamedTextColor.GREEN
+            ));
         }
     }
 
-    @EventHandler
+    @EventHandler(
+            priority = EventPriority.HIGHEST,
+            ignoreCancelled = true
+    )
     public void onControllerClick(PlayerInteractEvent event) {
-        if (event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
-        if (event.getHand() != EquipmentSlot.HAND) return;
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK) {
+            return;
+        }
+
+        if (event.getHand() != EquipmentSlot.HAND) {
+            return;
+        }
 
         Block block = event.getClickedBlock();
-        if (block == null || block.getType() != Material.LECTERN) return;
 
-        if (block.getState() instanceof Lectern lectern) {
-            if (lectern.getPersistentDataContainer().has(MoveShipPlugin.CONTROLLER_KEY, PersistentDataType.BYTE)) {
-                
-                event.setCancelled(true);
-                ShipGUI.open(event.getPlayer(), block.getLocation());
-            }
+        if (block == null || block.getType() != Material.LECTERN) {
+            return;
         }
+
+        if (!(block.getState() instanceof Lectern lectern)) {
+            return;
+        }
+
+        if (!lectern.getPersistentDataContainer().has(
+                MoveShipPlugin.CONTROLLER_KEY,
+                PersistentDataType.BYTE
+        )) {
+            return;
+        }
+
+        event.setCancelled(true);
+        ShipGUI.open(event.getPlayer(), block.getLocation());
     }
 }
