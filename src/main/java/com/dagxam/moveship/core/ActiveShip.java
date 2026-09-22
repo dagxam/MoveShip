@@ -76,12 +76,10 @@ public class ActiveShip {
     private static final float TURN_DECELERATION = 0.14f;
 
     /*
-     * Увеличенная клиентская интерполяция.
-     *
-     * Paper позволяет растягивать перемещение Display на несколько тиков
-     * через teleportDuration и отдельно сглаживать Transformation.
+     * Длительность визуальной интерполяции Transformation.
+     * Положение Display наследуется от passenger-chain, поэтому
+     * teleportDuration для дочерних Display равен 0.
      */
-    private static final int DISPLAY_TELEPORT_DURATION = 1;
     private static final int DISPLAY_INTERPOLATION_DURATION = 2;
 
     private final Player pilot;
@@ -843,10 +841,8 @@ public class ActiveShip {
              * Matrix меняем каждый tick потому, что внутренний shipYaw
              * является непрерывным float-значением.
              *
-             * Carrier перемещает корабль через velocity.
-             * Display position сглаживается коротким
-             * teleportDuration=1, а поворот корпуса — отдельной
-             * интерполяцией Transformation на 2 тика.
+             * Carrier перемещает корабль через velocity, а клиент сглаживает
+             * изменение Transformation на два тика.
              */
             display.setTransformationMatrix(
                     matrix
