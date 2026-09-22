@@ -1,11 +1,11 @@
 package com.dagxam.moveship.core;
 
-import org.bukkit.Axis;
 import org.bukkit.Bukkit;
+import org.bukkit.Input;
+import org.bukkit.World;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
-import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Container;
 import org.bukkit.block.data.BlockData;
@@ -13,6 +13,7 @@ import org.bukkit.block.data.Directional;
 import org.bukkit.block.data.MultipleFacing;
 import org.bukkit.block.data.Orientable;
 import org.bukkit.block.data.Rotatable;
+import org.bukkit.block.structure.StructureRotation;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.Player;
@@ -22,10 +23,8 @@ import org.bukkit.util.Vector;
 import org.joml.Matrix4f;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 public class ActiveShip {
@@ -40,7 +39,7 @@ public class ActiveShip {
      * Это важно: поворот корпуса больше не может менять локальную посадку игрока
      * через цепочку пассажиров.
      */
-    private final ArmorStand rootEntity;
+    private ArmorStand rootEntity;
 
     private final List<ShipBlockData> originalBlocks = new ArrayList<>();
     private final List<BlockDisplay> displayEntities = new ArrayList<>();
@@ -83,6 +82,7 @@ public class ActiveShip {
     private float currentTurn;
 
     private BukkitTask task;
+    private boolean restored;
 
     /**
      * Положение игрока относительно центра корабля в момент старта.
@@ -181,9 +181,11 @@ public class ActiveShip {
          * в сохраненном BlockState.
          */
         for (Block block : blocks) {
-            if (block.getState() instanceof Container container) {
-                container.getInventory().clear();
-            }
+            /*
+             * Обычный setType(AIR, false) не является разрушением блока.
+             * Физика не запускается, поэтому контейнер не нужно вручную
+             * очищать перед превращением в AIR.
+             */
             block.setType(Material.AIR, false);
         }
 
@@ -265,8 +267,8 @@ public class ActiveShip {
     }
 
     private void tick() {
-        if (!pilot.isOnline() || !rootEntity.isValid()) {
-            restoreBlocks();
+        if (!pilot.isOnline() || rootEntity == null || !rootEntity.isValid()) {
+            ShipManager.stopShip(pilot);
             return;
         }
 
@@ -278,9 +280,17 @@ public class ActiveShip {
          * закрывает случаи, когда транспортирование произошло нестандартно.
          */
         if (pilot.getVehicle() != rootEntity) {
-            restoreBlocks();
+            ShipManager.stopShip(pilot);
             return;
         }
+
+        Input input = pilot.getCurrentInput();
+        setInput(
+                input.isForward(),
+                input.isBackward(),
+                input.isLeft(),
+                input.isRight()
+        );
 
         updatePhysics();
 
@@ -532,13 +542,22 @@ public class ActiveShip {
      * через занятый блок.
      */
     private boolean canTransform(Location target, float yaw) {
-        if (target.getWorld() == null) {
+        World world = target.getWorld();
+
+        if (world == null) {
             return false;
         }
 
         double delta = Math.toRadians(yaw - initialYaw);
         double cos = Math.cos(delta);
         double sin = Math.sin(delta);
+
+        /*
+         * Из-за округления при плавном повороте несколько корабельных
+         * координат могут попасть в одну и ту же клетку. Дубликаты
+         * не проверяем повторно.
+         */
+        Set<BlockKey> checked = new HashSet<>();
 
         for (ShipBlockData block : originalBlocks) {
             double rotatedX =
@@ -549,16 +568,39 @@ public class ActiveShip {
                     block.getLocalX() * sin
                             + block.getLocalZ() * cos;
 
-            int targetBlockX = floorToInt(target.getX() + rotatedX);
-            int targetBlockY = target.getBlockY() + block.getLocalY();
-            int targetBlockZ = floorToInt(target.getZ() + rotatedZ);
+            int targetBlockX =
+                    floorToInt(target.getX() + rotatedX);
+            int targetBlockY =
+                    target.getBlockY() + block.getLocalY();
+            int targetBlockZ =
+                    floorToInt(target.getZ() + rotatedZ);
 
-            Block worldBlock = target.getWorld().getBlockAt(
-                    targetBlockX,
-                    targetBlockY,
-                    targetBlockZ
-            );
+            if (targetBlockY < world.getMinHeight()
+                    || targetBlockY >= world.getMaxHeight()) {
+                return false;
+            }
 
+            if (!checked.add(
+                    new BlockKey(
+                            targetBlockX,
+                            targetBlockY,
+                            targetBlockZ
+                    )
+            )) {
+                continue;
+            }
+
+            Block worldBlock =
+                    world.getBlockAt(
+                            targetBlockX,
+                            targetBlockY,
+                            targetBlockZ
+                    );
+
+            /*
+             * Вода, воздух и прочие не-solid блоки не блокируют движение.
+             * Solid блок в целевой клетке блокирует корабль.
+             */
             if (worldBlock.getType().isSolid()) {
                 return false;
             }
@@ -568,6 +610,11 @@ public class ActiveShip {
     }
 
     public void restoreBlocks() {
+        if (restored) {
+            return;
+        }
+
+        restored = true;
         stopInternal();
 
         /*
@@ -680,7 +727,9 @@ public class ActiveShip {
         land.setYaw(playerYaw);
         land.setPitch(playerPitch);
 
-        pilot.teleport(land);
+        if (pilot.isOnline()) {
+            pilot.teleport(land);
+        }
 
         for (BlockDisplay display : displayEntities) {
             if (display.isValid()) {
@@ -767,123 +816,18 @@ public class ActiveShip {
         );
     }
 
-    private void rotateData(BlockData data, int rotations) {
-        if (rotations == 0) {
-            return;
-        }
-
-        if (data instanceof Directional directional) {
-            BlockFace face = directional.getFacing();
-
-            for (int i = 0; i < rotations; i++) {
-                face = clockwise(face);
-            }
-
-            if (directional.getFaces().contains(face)) {
-                directional.setFacing(face);
-            }
-
-        } else if (data instanceof Orientable orientable) {
-            if (rotations % 2 != 0) {
-                if (orientable.getAxis() == Axis.X) {
-                    orientable.setAxis(Axis.Z);
-                } else if (orientable.getAxis() == Axis.Z) {
-                    orientable.setAxis(Axis.X);
-                }
-            }
-
-        } else if (data instanceof Rotatable rotatable) {
-            int index = ROT16.indexOf(rotatable.getRotation());
-
-            if (index >= 0) {
-                rotatable.setRotation(
-                        ROT16.get(
-                                Math.floorMod(
-                                        index + rotations * 4,
-                                        ROT16.size()
-                                )
-                        )
-                );
-            }
-
-        } else if (data instanceof MultipleFacing multipleFacing) {
-            Set<BlockFace> current =
-                    new HashSet<>(multipleFacing.getFaces());
-
-            for (BlockFace face : multipleFacing.getAllowedFaces()) {
-                multipleFacing.setFace(face, false);
-            }
-
-            for (BlockFace face : current) {
-                BlockFace rotated = face;
-
-                for (int i = 0; i < rotations; i++) {
-                    rotated = clockwise(rotated);
-                }
-
-                if (multipleFacing.getAllowedFaces().contains(rotated)) {
-                    multipleFacing.setFace(rotated, true);
-                }
-            }
-
-        } else if (data instanceof org.bukkit.block.data.type.Wall wall) {
-            Map<BlockFace, org.bukkit.block.data.type.Wall.Height> heights =
-                    new HashMap<>();
-
-            for (BlockFace face : new BlockFace[]{
-                    BlockFace.NORTH,
-                    BlockFace.EAST,
-                    BlockFace.SOUTH,
-                    BlockFace.WEST
-            }) {
-                heights.put(face, wall.getHeight(face));
-            }
-
-            for (Map.Entry<BlockFace, org.bukkit.block.data.type.Wall.Height> entry
-                    : heights.entrySet()) {
-
-                BlockFace rotated = entry.getKey();
-
-                for (int i = 0; i < rotations; i++) {
-                    rotated = clockwise(rotated);
-                }
-
-                wall.setHeight(rotated, entry.getValue());
+    private static void rotateData(BlockData data, int rotations) {
+        switch (Math.floorMod(rotations, 4)) {
+            case 1 ->
+                    data.rotate(StructureRotation.CLOCKWISE_90);
+            case 2 ->
+                    data.rotate(StructureRotation.CLOCKWISE_180);
+            case 3 ->
+                    data.rotate(StructureRotation.COUNTERCLOCKWISE_90);
+            default -> {
+                // Без поворота ничего делать не нужно.
             }
         }
-    }
-
-    private static BlockFace clockwise(BlockFace face) {
-        return switch (face) {
-            case NORTH -> BlockFace.EAST;
-            case EAST -> BlockFace.SOUTH;
-            case SOUTH -> BlockFace.WEST;
-            case WEST -> BlockFace.NORTH;
-
-            case NORTH_EAST -> BlockFace.SOUTH_EAST;
-            case SOUTH_EAST -> BlockFace.SOUTH_WEST;
-            case SOUTH_WEST -> BlockFace.NORTH_WEST;
-            case NORTH_WEST -> BlockFace.NORTH_EAST;
-
-            case NORTH_NORTH_EAST ->
-                    BlockFace.EAST_NORTH_EAST;
-            case EAST_NORTH_EAST ->
-                    BlockFace.EAST_SOUTH_EAST;
-            case EAST_SOUTH_EAST ->
-                    BlockFace.SOUTH_SOUTH_EAST;
-            case SOUTH_SOUTH_EAST ->
-                    BlockFace.SOUTH_SOUTH_WEST;
-            case SOUTH_SOUTH_WEST ->
-                    BlockFace.WEST_SOUTH_WEST;
-            case WEST_SOUTH_WEST ->
-                    BlockFace.WEST_NORTH_WEST;
-            case WEST_NORTH_WEST ->
-                    BlockFace.NORTH_NORTH_WEST;
-            case NORTH_NORTH_WEST ->
-                    BlockFace.NORTH_NORTH_EAST;
-
-            default -> face;
-        };
     }
 
     public Player getPilot() {
@@ -892,6 +836,9 @@ public class ActiveShip {
 
     public ArmorStand getRootEntity() {
         return rootEntity;
+    }
+
+    private record BlockKey(int x, int y, int z) {
     }
 
     private record RestoreEntry(
