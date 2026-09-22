@@ -19,6 +19,7 @@ public final class ShipBlockData {
     private final int localZ;
     private final BlockData blockData;
     private final BlockState stateSnapshot;
+    private final org.bukkit.inventory.ItemStack[] items;
 
     /**
      * Создает полный снимок блока, который используется ядром движения.
@@ -28,13 +29,15 @@ public final class ShipBlockData {
             int localY,
             int localZ,
             BlockData blockData,
-            BlockState stateSnapshot
+            BlockState stateSnapshot,
+            org.bukkit.inventory.ItemStack[] items
     ) {
         this.localX = localX;
         this.localY = localY;
         this.localZ = localZ;
         this.blockData = blockData;
         this.stateSnapshot = stateSnapshot;
+        this.items = items;
     }
 
     public int getLocalX() {
@@ -55,6 +58,10 @@ public final class ShipBlockData {
 
     public BlockState getStateSnapshot() {
         return stateSnapshot;
+    }
+
+    public org.bukkit.inventory.ItemStack[] getItems() {
+        return items;
     }
 
 }
