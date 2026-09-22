@@ -46,6 +46,15 @@ public class ShipGUIListener implements Listener {
 
                 Set<Block> found = ShipScanner.scanShip(core);
 
+                if (found == null) {
+                    player.sendMessage(Component.text(
+                        "Корабль слишком большой для активации. Максимальный размер: "
+                                + ShipScanner.getMaxShipSize()
+                                + " блоков.",
+                        NamedTextColor.RED));
+                    return;
+                }
+
                 if (found.isEmpty()) {
                     player.sendMessage(Component.text(
                         "Блоки корабля не найдены вокруг кафедры!", NamedTextColor.RED));
