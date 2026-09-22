@@ -2,6 +2,7 @@ package com.dagxam.moveship.core;
 
 import com.dagxam.moveship.MoveShipPlugin;
 import org.bukkit.Axis;
+import org.bukkit.Input;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -56,15 +57,15 @@ public class ActiveShip {
      * Скорости близки к современной лодочной/корабельной модели, но
      * разгон и торможение сглажены, чтобы W/S не давали резкий скачок.
      */
-    private static final double MAX_FORWARD_SPEED = 0.25;
-    private static final double MAX_REVERSE_SPEED = 0.125;
+    private static final double MAX_FORWARD_SPEED = 0.40;
+    private static final double MAX_REVERSE_SPEED = 0.20;
 
     /*
      * Плавная физика без резкого скачка скорости:
      * ускорение и торможение идут небольшими фиксированными шагами.
      */
-    private static final double SPEED_ACCELERATION = 0.015;
-    private static final double SPEED_DECELERATION = 0.020;
+    private static final double SPEED_ACCELERATION = 0.025;
+    private static final double SPEED_DECELERATION = 0.025;
 
     /*
      * Внутренняя угловая скорость.
@@ -479,6 +480,22 @@ public class ActiveShip {
                                 0.0
                         );
 
+        /*
+         * Не полагаемся только на PlayerInputEvent для удержания клавиш.
+         * Paper предоставляет текущее состояние input игрока через
+         * Player#getCurrentInput(), поэтому W/A/S/D считываются каждый тик.
+         * Это исключает ситуацию: нажал W -> корабль чуть двинулся ->
+         * состояние больше не обновилось -> корабль остановился.
+         */
+        Input input = pilot.getCurrentInput();
+
+        setInput(
+                input.isForward(),
+                input.isBackward(),
+                input.isLeft(),
+                input.isRight()
+        );
+
         updatePhysics();
 
         Location oldCenter =
@@ -653,12 +670,16 @@ public class ActiveShip {
 
         if (leftPressed
                 && !rightPressed) {
+            /*
+             * В Minecraft положительный yaw соответствует повороту влево.
+             * Поэтому A -> +yaw, D -> -yaw.
+             */
             targetTurn =
-                    -MAX_TURN_SPEED;
+                    MAX_TURN_SPEED;
         } else if (rightPressed
                 && !leftPressed) {
             targetTurn =
-                    MAX_TURN_SPEED;
+                    -MAX_TURN_SPEED;
         }
 
         float turnStep =
