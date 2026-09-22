@@ -801,6 +801,11 @@ public class ActiveShip {
         if (!sameCenter(oldCenter, anchorCenter)) {
             fillWater();
         }
+
+        /*
+         * Настоящее освещение перемещается вместе с визуальным корпусом.
+         */
+        updateLightBlocks();
     }
 
     private void updatePhysics() {
