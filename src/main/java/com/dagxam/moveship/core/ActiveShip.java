@@ -1051,8 +1051,12 @@ public class ActiveShip {
 
         Set<BP> occupied = new HashSet<>();
 
+        /*
+         * Геометрия корпуса визуально поворачивается на -deltaYaw,
+         * поэтому водяной след использует тот же знак.
+         */
         double delta = Math.toRadians(
-                shipYaw - initialYaw
+                -(shipYaw - initialYaw)
         );
 
         double cos = Math.cos(delta);
