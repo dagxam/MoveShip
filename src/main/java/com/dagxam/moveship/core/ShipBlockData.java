@@ -2,6 +2,7 @@ package com.dagxam.moveship.core;
 
 import org.bukkit.block.BlockState;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.inventory.ItemStack;
 
 public class ShipBlockData {
 
@@ -10,19 +11,22 @@ public class ShipBlockData {
     private final int localZ;
     private final BlockData blockData;
     private final BlockState stateSnapshot;
+    private final ItemStack[] items;
 
     public ShipBlockData(
             int localX,
             int localY,
             int localZ,
             BlockData blockData,
-            BlockState stateSnapshot
+            BlockState stateSnapshot,
+            ItemStack[] items
     ) {
         this.localX = localX;
         this.localY = localY;
         this.localZ = localZ;
         this.blockData = blockData;
         this.stateSnapshot = stateSnapshot;
+        this.items = cloneItems(items);
     }
 
     public int getLocalX() {
@@ -43,5 +47,23 @@ public class ShipBlockData {
 
     public BlockState getStateSnapshot() {
         return stateSnapshot;
+    }
+
+    public ItemStack[] getItems() {
+        return cloneItems(items);
+    }
+
+    private static ItemStack[] cloneItems(ItemStack[] source) {
+        if (source == null) {
+            return null;
+        }
+
+        ItemStack[] copy = new ItemStack[source.length];
+
+        for (int i = 0; i < source.length; i++) {
+            copy[i] = source[i] == null ? null : source[i].clone();
+        }
+
+        return copy;
     }
 }
