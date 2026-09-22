@@ -1001,7 +1001,6 @@ public class ActiveShip {
         double sin = Math.sin(delta);
 
         java.util.Map<BlockKey, Integer> desired = new java.util.HashMap<>();
-        java.util.Map<BlockKey, Boolean> desiredWaterlogged = new java.util.HashMap<>();
 
         for (LightSource source : lightSources) {
             int x = floorToInt(
@@ -1084,10 +1083,13 @@ public class ActiveShip {
                 light.setLevel(wantedLevel);
 
                 /*
-                 * Световые блоки можно размещать внутри воды без замены
-                 * водной среды: Light поддерживает waterlogged.
+                 * Только вода и bubble column должны сохраняться под
+                 * временным LIGHT как waterlogged. Лаву заменять нельзя:
+                 * иначе при удалении LIGHT она превратится в воду.
                  */
-                light.setWaterlogged(block.isLiquid());
+                boolean water = block.getType() == Material.WATER
+                        || block.getType() == Material.BUBBLE_COLUMN;
+                light.setWaterlogged(water);
 
                 block.setBlockData(light, false);
             } else {
@@ -1102,11 +1104,11 @@ public class ActiveShip {
                     changed = true;
                 }
 
-                if (light.isWaterlogged() != block.isLiquid()) {
-                    light.setWaterlogged(block.isLiquid());
-                    changed = true;
-                }
-
+                /*
+                 * Для уже установленного LIGHT waterlogged-состояние нельзя
+                 * пересчитывать через block.isLiquid(): сам блок теперь LIGHT.
+                 * Сохраняем текущее состояние до следующего перемещения.
+                 */
                 if (changed) {
                     block.setBlockData(light, false);
                 }
