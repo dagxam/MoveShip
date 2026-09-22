@@ -45,13 +45,13 @@ public class ActiveShip {
     private final List<Matrix4f> displayMatrices = new ArrayList<>();
 
     /**
-     * Исходные клетки физического корабля.
+     * Клетки физического корпуса, под которыми/рядом с которыми до
+     * активации находилась вода.
      *
-     * Пока корабль только активирован и ещё не начал движение, эти клетки
-     * временно игнорируются collision-check, иначе собственные физические
-     * блоки стали бы для корабля препятствием на первом маленьком шаге.
+     * После удаления физического корпуса эти клетки заполняются водой,
+     * чтобы в океане не оставалась пустая воздушная полость на месте судна.
      */
-    private final Set<BlockKey> initialShipCells = new HashSet<>();
+    private final Set<BlockKey> waterFillCells = new HashSet<>();
 
     /**
      * Светящиеся блоки корабля. BlockDisplay отвечает за внешний вид,
@@ -105,20 +105,6 @@ public class ActiveShip {
     private boolean restored;
 
     /**
-     * Физические блоки корабля удаляются не при самой активации,
-     * а только при первом реальном движении/повороте.
-     *
-     * Это не оставляет пустую площадку сразу после нажатия
-     * «Активировать» и одновременно не мешает кораблю затем
-     * покинуть исходное место.
-     */
-    private boolean physicalBlocksCleared;
-
-    private final int originBlockX;
-    private final int originBlockY;
-    private final int originBlockZ;
-
-    /**
      * Положение игрока относительно центра корабля в момент старта.
      * Этот offset вращается вместе с корпусом, поэтому игрок остается
      * прикрепленным к тому же месту штурвала.
@@ -140,10 +126,6 @@ public class ActiveShip {
 
         this.pilot = pilot;
         this.plugin = JavaPlugin.getPlugin(com.dagxam.moveship.MoveShipPlugin.class);
-
-        this.originBlockX = anchorLocation.getBlockX();
-        this.originBlockY = anchorLocation.getBlockY();
-        this.originBlockZ = anchorLocation.getBlockZ();
 
         this.anchorCenter = anchorLocation.getBlock().getLocation().add(0.5, 0.0, 0.5);
         this.anchorCenter.setWorld(anchorLocation.getWorld());
@@ -180,14 +162,6 @@ public class ActiveShip {
             int localY = block.getY() - anchorLocation.getBlockY();
             int localZ = block.getZ() - anchorLocation.getBlockZ();
 
-            initialShipCells.add(
-                    new BlockKey(
-                            originBlockX + localX,
-                            originBlockY + localY,
-                            originBlockZ + localZ
-                    )
-            );
-
             BlockData blockData = block.getBlockData().clone();
             BlockState snapshot = block.getState(true);
             ItemStack[] items = null;
@@ -206,14 +180,28 @@ public class ActiveShip {
 
             if (snapshot instanceof Container container) {
                 /*
-                 * На этапе активации живой контейнер НЕ очищаем.
-                 * Мы пока не удаляем физический корабль из мира.
+                 * Контейнер сначала полностью сохраняется в snapshot,
+                 * затем его инвентарь очищается ДО удаления физического блока.
                  *
-                 * Инвентарь только копируется в snapshot.
-                 * Физическое очищение контейнера выполняется атомарно
-                 * вместе с удалением блоков в момент первого движения.
+                 * Иначе при setType(AIR) Minecraft/Paper может обработать
+                 * содержимое как обычный лут контейнера и выбросить предметы
+                 * в мир. Во время движения живая копия инвентаря не нужна:
+                 * содержимое хранится внутри ShipBlockData и возвращается
+                 * только при восстановлении корабля.
                  */
                 items = deepCopy(container.getInventory());
+                container.getInventory().clear();
+                container.update(true, false);
+            }
+
+            if (hasAdjacentWater(block)) {
+                waterFillCells.add(
+                        new BlockKey(
+                                block.getX(),
+                                block.getY(),
+                                block.getZ()
+                        )
+                );
             }
 
             originalBlocks.add(
@@ -284,16 +272,46 @@ public class ActiveShip {
             }
 
             /*
-             * ВАЖНО:
-             * при самой активации физический корабль пока НЕ удаляем.
-             *
-             * BlockDisplay уже создан поверх реальной конструкции, поэтому
-             * игрок сразу видит активный корабль, а исходное место не
-             * превращается в пустоту.
-             *
-             * Физические блоки и контейнеры будут безопасно сняты только
-             * при первом реальном движении/повороте.
+             * Контейнеры сначала очищаем от живого инвентаря.
+             * Содержимое уже полностью сохранено в ShipBlockData.
+             * Это гарантирует, что при снятии сундука/бочки/печки
+             * Minecraft/Paper не создаст выпавшие ItemEntity.
              */
+            for (ShipBlockData data : originalBlocks) {
+                if (data.getItems() == null) {
+                    continue;
+                }
+
+                Block containerBlock =
+                        anchorLocation.getWorld().getBlockAt(
+                                anchorLocation.getBlockX() + data.getLocalX(),
+                                anchorLocation.getBlockY() + data.getLocalY(),
+                                anchorLocation.getBlockZ() + data.getLocalZ()
+                        );
+
+                if (containerBlock.getState() instanceof Container container) {
+                    container.getInventory().clear();
+                    container.update(true, false);
+                }
+            }
+
+            for (Block block : blocks) {
+                block.setType(Material.AIR, false);
+            }
+
+            /*
+             * Корабль стоял в воде. После удаления физического корпуса
+             * не оставляем воздушные ячейки там, где до активации вода
+             * непосредственно соприкасалась с корпусом.
+             */
+            restoreWaterAtOriginalPosition();
+
+            /*
+             * После удаления физического корпуса устанавливаем реальные
+             * источники освещения в тех же клетках, где находятся фонари
+             * и светящие блоки. Они невидимы и не участвуют в коллизии.
+             */
+            updateLightBlocks();
         } catch (RuntimeException ex) {
             for (BlockDisplay display : displayEntities) {
                 if (display != null && display.isValid()) {
@@ -310,10 +328,8 @@ public class ActiveShip {
                 rootEntity.remove();
             }
 
-            if (physicalBlocksCleared) {
-                clearLightBlocks();
-                restoreOriginalBlocks();
-            }
+            clearLightBlocks();
+            restoreOriginalBlocks();
 
             throw ex;
         }
@@ -402,16 +418,6 @@ public class ActiveShip {
         updateSeat();
 
         if (moved) {
-            /*
-             * До первого реального движения физическая конструкция
-             * остаётся в мире.
-             *
-             * Как только корабль действительно начал двигаться или
-             * поворачиваться, безопасно удаляем исходные блоки. После этого
-             * BlockDisplay становится единственным визуальным корпусом.
-             */
-            clearPhysicalBlocks();
-
             /*
              * Корпус обновляется КАЖДЫЙ тик:
              * это одновременно перемещение и вращение.
@@ -540,56 +546,48 @@ public class ActiveShip {
     }
 
     /**
-     * Удаляет физический корабль из его ИСХОДНОЙ позиции только тогда,
-     * когда корабль действительно начал движение/поворот.
-     *
-     * Все контейнеры очищаются непосредственно перед setType(AIR),
-     * чтобы сундуки, бочки, печи и другие TileEntity не выбросили предметы.
+     * Проверяет, соприкасается ли исходная клетка корабля с водой
+     * до удаления физической конструкции.
      */
-    private void clearPhysicalBlocks() {
-        if (physicalBlocksCleared) {
-            return;
-        }
+    private static boolean hasAdjacentWater(Block block) {
+        return block.getRelative(BlockFace.UP).getType() == Material.WATER
+                || block.getRelative(BlockFace.DOWN).getType() == Material.WATER
+                || block.getRelative(BlockFace.NORTH).getType() == Material.WATER
+                || block.getRelative(BlockFace.SOUTH).getType() == Material.WATER
+                || block.getRelative(BlockFace.EAST).getType() == Material.WATER
+                || block.getRelative(BlockFace.WEST).getType() == Material.WATER
+                || block.getRelative(BlockFace.UP).getType() == Material.BUBBLE_COLUMN
+                || block.getRelative(BlockFace.DOWN).getType() == Material.BUBBLE_COLUMN
+                || block.getRelative(BlockFace.NORTH).getType() == Material.BUBBLE_COLUMN
+                || block.getRelative(BlockFace.SOUTH).getType() == Material.BUBBLE_COLUMN
+                || block.getRelative(BlockFace.EAST).getType() == Material.BUBBLE_COLUMN
+                || block.getRelative(BlockFace.WEST).getType() == Material.BUBBLE_COLUMN;
+    }
 
+    /**
+     * Восстанавливает воду в освободившихся исходных клетках корабля.
+     *
+     * Запись выполняется только в воздух, поэтому окружающие блоки,
+     * землю и существующие конструкции мы не затрагиваем.
+     */
+    private void restoreWaterAtOriginalPosition() {
         World world = anchorCenter.getWorld();
 
-        if (world == null) {
+        if (world == null || waterFillCells.isEmpty()) {
             return;
         }
 
-        for (ShipBlockData data : originalBlocks) {
+        for (BlockKey key : waterFillCells) {
             Block block = world.getBlockAt(
-                    originBlockX + data.getLocalX(),
-                    originBlockY + data.getLocalY(),
-                    originBlockZ + data.getLocalZ()
+                    key.x(),
+                    key.y(),
+                    key.z()
             );
 
-            /*
-             * Защита от удаления чужого блока, если другой плагин или игрок
-             * успел изменить исходную клетку до первого движения.
-             */
-            if (!block.getBlockData().getMaterial().equals(
-                    data.getBlockData().getMaterial()
-            )) {
-                continue;
+            if (block.getType().isAir()) {
+                block.setType(Material.WATER, false);
             }
-
-            if (data.getItems() != null
-                    && block.getState() instanceof Container container) {
-                container.getInventory().clear();
-                container.update(true, false);
-            }
-
-            block.setType(Material.AIR, false);
         }
-
-        physicalBlocksCleared = true;
-
-        /*
-         * После удаления исходного корпуса устанавливаем временные
-         * невидимые источники реального освещения.
-         */
-        updateLightBlocks();
     }
 
     private void updateDisplays() {
@@ -742,16 +740,6 @@ public class ActiveShip {
                 continue;
             }
 
-            /*
-             * До первого движения физический корпус ещё находится в
-             * исходных клетках мира. Эти клетки принадлежат самому кораблю
-             * и не должны блокировать его первый шаг/поворот.
-             */
-            if (!physicalBlocksCleared
-                    && initialShipCells.contains(key)) {
-                continue;
-            }
-
             Block worldBlock = world.getBlockAt(x, y, z);
 
             /*
@@ -836,34 +824,6 @@ public class ActiveShip {
                             data.getItems()
                     )
             );
-        }
-
-        /*
-         * Если корабль был только активирован и ни разу не двигался,
-         * физические блоки всё ещё находятся на месте. В таком случае
-         * повторно перестраивать их не нужно.
-         *
-         * Их восстановление требуется только после фактического снятия
-         * корпуса в момент первого движения.
-         */
-        if (!physicalBlocksCleared) {
-            clearLightBlocks();
-
-            for (BlockDisplay display : displayEntities) {
-                if (display.isValid()) {
-                    display.remove();
-                }
-            }
-
-            displayEntities.clear();
-            displayLocations.clear();
-            displayMatrices.clear();
-
-            if (rootEntity.isValid()) {
-                rootEntity.remove();
-            }
-
-            return;
         }
 
         /*
