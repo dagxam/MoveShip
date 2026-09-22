@@ -320,15 +320,12 @@ public class ActiveShip {
                             stand.setInvisible(true);
                             stand.setMarker(false);
                             /*
-                             * Для carrier нельзя отключать gravity, если он
-                             * должен перемещаться через Entity#setVelocity().
-                             * Paper отдельно предоставляет ArmorStand#setCanMove().
-                             *
-                             * Y-скорость каждый тик задается равной 0, поэтому
-                             * carrier не падает, но горизонтальное движение
-                             * через velocity продолжает работать.
+                             * ArmorStand используется как отдельный root carrier.
+                             * Гравитация выключена: вертикальная позиция корабля
+                             * управляется только нашей физикой, а горизонтальное
+                             * движение передается через Entity#setVelocity().
                              */
-                            stand.setGravity(true);
+                            stand.setGravity(false);
                             stand.setCanMove(true);
                             stand.setInvulnerable(true);
                             stand.setPersistent(false);
@@ -532,12 +529,32 @@ public class ActiveShip {
                                 + currentTurn
                 );
 
+        /*
+         * Направление движения строится из ТОГО ЖЕ yaw, который станет
+         * курсом корабля в этом тике.
+         *
+         * Это тот же принцип, что используется в SimpleShips/BlockShips:
+         * forward = (-sin(yaw), 0, cos(yaw)).
+         *
+         * Никакой отдельной дуговой поправки здесь нет. Поэтому W всегда
+         * означает строго вперед по продольной оси корабля, а A/D только
+         * меняют курс.
+         */
+        double yawRadians =
+                Math.toRadians(desiredYaw);
+
+        Vector forward =
+                new Vector(
+                        -Math.sin(yawRadians),
+                        0.0,
+                        Math.cos(yawRadians)
+                );
+
         Location desiredCenter =
-                calculateNextCenter(
-                        anchorCenter,
-                        shipYaw,
-                        desiredYaw,
-                        speed
+                anchorCenter.clone().add(
+                        forward.getX() * speed,
+                        0.0,
+                        forward.getZ() * speed
                 );
 
         boolean wantsMove =
@@ -681,15 +698,18 @@ public class ActiveShip {
         if (leftPressed
                 && !rightPressed) {
             /*
-             * В Minecraft положительный yaw соответствует повороту влево.
-             * Поэтому A -> +yaw, D -> -yaw.
+             * В системе Minecraft yaw:
+             * A (влево) уменьшает yaw,
+             * D (вправо) увеличивает yaw.
+             *
+             * Именно такую схему использует SimpleShips.
              */
             targetTurn =
-                    MAX_TURN_SPEED;
+                    -MAX_TURN_SPEED;
         } else if (rightPressed
                 && !leftPressed) {
             targetTurn =
-                    -MAX_TURN_SPEED;
+                    MAX_TURN_SPEED;
         }
 
         float turnStep =
@@ -765,9 +785,13 @@ public class ActiveShip {
                             )
                     );
 
+            /*
+             * Визуальный поворот должен иметь тот же знак, что и физический
+             * forward-вектор. BlockShips применяет -deltaYaw для Display.
+             */
             matrix.identity()
                     .rotateY(
-                            (float) delta
+                            (float) -delta
                     );
 
             ShipBlockData block =
@@ -830,73 +854,6 @@ public class ActiveShip {
      * При постоянной угловой скорости интегрируем движение по небольшой
      * дуге. При нулевом повороте используется обычный прямой вектор.
      */
-    private static Location calculateNextCenter(
-            Location center,
-            float fromYaw,
-            float toYaw,
-            double speed
-    ) {
-        Location result = center.clone();
-
-        if (Math.abs(speed) <= 0.00001) {
-            return result;
-        }
-
-        double deltaDegrees =
-                normalizeDelta(
-                        toYaw - fromYaw
-                );
-
-        double deltaRadians =
-                Math.toRadians(deltaDegrees);
-
-        double fromRadians =
-                Math.toRadians(fromYaw);
-
-        if (Math.abs(deltaRadians) < 1.0E-8) {
-            result.add(
-                    -Math.sin(fromRadians) * speed,
-                    0.0,
-                    Math.cos(fromRadians) * speed
-            );
-
-            return result;
-        }
-
-        /*
-         * Интеграл направления вперед по дуге:
-         *
-         * dx = v / omega * (cos(to) - cos(from))
-         * dz = v / omega * (sin(to) - sin(from))
-         *
-         * Для маленьких корабельных углов это дает ту же скорость,
-         * но без бокового скольжения при одновременном повороте.
-         */
-        double omega = deltaRadians;
-
-        double deltaX =
-                speed / omega
-                        * (
-                        Math.cos(fromRadians + deltaRadians)
-                                - Math.cos(fromRadians)
-                );
-
-        double deltaZ =
-                speed / omega
-                        * (
-                        Math.sin(fromRadians + deltaRadians)
-                                - Math.sin(fromRadians)
-                );
-
-        result.add(
-                deltaX,
-                0.0,
-                deltaZ
-        );
-
-        return result;
-    }
-
     private static boolean sameCenter(
             Location a,
             Location b
