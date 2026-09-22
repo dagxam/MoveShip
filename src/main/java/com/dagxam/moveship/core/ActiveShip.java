@@ -9,7 +9,10 @@ import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.Container;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.block.data.Directional;
 import org.bukkit.block.data.MultipleFacing;
 import org.bukkit.block.data.Orientable;
@@ -90,11 +93,6 @@ public class ActiveShip {
      */
     private final ArmorStand helmAnchor;
 
-    /**
-     * Collision построенного корабля, полностью независимая от Entity hitbox.
-     */
-    private final ShipCollision collisionModel;
-
     private final List<ShipBlockData> originalBlocks =
             new ArrayList<>();
 
@@ -119,6 +117,19 @@ public class ActiveShip {
             new ArrayList<>();
 
     /**
+     * Источники света корабля. Внешний вид остается BlockDisplay,
+     * а невидимые LIGHT-блоки поддерживают настоящее освещение мира.
+     */
+    private final List<LightSource> lightSources =
+            new ArrayList<>();
+
+    /**
+     * Временные LIGHT-блоки и точные данные клеток, которые они заменили.
+     */
+    private final Map<BlockKey, BlockData> activeLightCells =
+            new HashMap<>();
+
+    /**
      * Центр исходного anchor-блока корабля.
      *
      * Эта точка является физическим центром вращения корабля.
@@ -140,15 +151,6 @@ public class ActiveShip {
     private boolean backwardPressed;
     private boolean leftPressed;
     private boolean rightPressed;
-
-    /*
-     * Диагностические флаги. Они не меняют физику, но позволяют точно
-     * установить по server.log, приходит ли W/A/S/D, блокирует ли collision
-     * движение и успешно ли перемещается carrier.
-     */
-    private boolean inputDiagnosticLogged;
-    private boolean collisionDiagnosticLogged;
-    private boolean teleportDiagnosticLogged;
 
     private BukkitTask task;
 
@@ -280,41 +282,53 @@ public class ActiveShip {
             BlockState snapshot =
                     block.getState(true);
 
+            ItemStack[] items = null;
+
+            int lightEmission =
+                    blockData.getLightEmission();
+
+            if (lightEmission > 0) {
+                lightSources.add(
+                        new LightSource(
+                                localX,
+                                localY,
+                                localZ,
+                                lightEmission
+                        )
+                );
+            }
+
+            if (snapshot instanceof Container container) {
+                /*
+                 * Сохраняем инвентарь ДО очистки. Затем очищаем его,
+                 * чтобы setType(AIR) никогда не превращал содержимое
+                 * сундука/бочки/печки в выброшенный лут.
+                 */
+                items = deepCopy(container.getInventory());
+                container.getInventory().clear();
+                container.update(true, false);
+            }
+
             originalBlocks.add(
                     new ShipBlockData(
                             localX,
                             localY,
                             localZ,
                             blockData,
-                            snapshot
+                            snapshot,
+                            items
                     )
             );
         }
 
         /*
-         * Collision строится по сохраненному BlockData пока физические
-         * блоки еще существуют/доступна исходная геометрия.
-         */
-        this.collisionModel =
-                new ShipCollision(
-                        originalBlocks,
-                        anchorCenter,
-                        initialYaw
-                );
-
-        /*
          * Теперь реальные блоки убираются из мира.
          */
         for (Block block : blocks) {
-            if (block.getState() instanceof
-                    org.bukkit.block.Container container) {
-                /*
-                 * Состояние уже сохранено. Очищаем world inventory, чтобы
-                 * одновременно не существовало двух копий содержимого.
-                 */
-                container.getInventory().clear();
-            }
-
+            /*
+             * Инвентарь контейнеров уже был очищен в момент snapshot.
+             * Здесь только убираем физические блоки без выпадения лута.
+             */
             block.setType(
                     Material.AIR,
                     false
@@ -322,6 +336,7 @@ public class ActiveShip {
         }
 
         fillInitialWater();
+        updateLightBlocks();
 
         /*
          * Невидимый ArmorStand — тот же базовый подход, который использует
@@ -503,8 +518,8 @@ public class ActiveShip {
         plugin.getLogger().info(
                 "Корабль активирован: блоков="
                         + originalBlocks.size()
-                        + ", collision-boxes="
-                        + collisionModel.getCollisionBoxCount()
+                        + ", light-sources="
+                        + lightSources.size()
                         + ", yaw="
                         + String.format(java.util.Locale.ROOT, "%.2f", shipYaw)
                         + ", core="
@@ -669,62 +684,38 @@ public class ActiveShip {
 
         if (wantsMove || wantsTurn) {
             /*
-             * Сначала пробуем выполнить полный шаг одновременно:
-             * движение + поворот.
+             * Проверяем только целевые клетки самого корабля.
+             * Это намеренно проще старой VoxelBox-модели: она не раздувает
+             * корпус Axis-Aligned Bounding Box при каждом повороте и поэтому
+             * не останавливает корабль из-за ложного касания при достройке.
              */
             boolean blocked =
-                    collisionModel.collidesBetweenTransforms(
-                            anchorCenter.getWorld(),
-                            anchorCenter,
-                            shipYaw,
+                    !canTransform(
                             desiredCenter,
                             desiredYaw
                     );
 
             if (!blocked) {
-                collisionDiagnosticLogged = false;
-
                 anchorCenter =
                         desiredCenter;
 
                 shipYaw =
                         desiredYaw;
             } else {
-                if (wantsMove && !collisionDiagnosticLogged) {
-                    collisionDiagnosticLogged = true;
-
-                    plugin.getLogger().warning(
-                            "Корабль заблокирован collision: "
-                                    + "speed="
-                                    + String.format(java.util.Locale.ROOT, "%.4f", speed)
-                                    + ", boxes="
-                                    + collisionModel.getCollisionBoxCount()
-                                    + ", from="
-                                    + formatLocation(anchorCenter)
-                                    + ", to="
-                                    + formatLocation(desiredCenter)
-                    );
-                }
                 /*
-                 * Если движение уперлось, все равно разрешаем чистый
-                 * поворот на месте, если он безопасен.
+                 * При препятствии не уничтожаем управление.
+                 * Скорость плавно снижается, а A/D всё ещё могут довернуть
+                 * корабль, если чистый поворот свободен.
                  */
                 if (wantsTurn
-                        && collisionModel.collidesBetweenTransforms(
-                        anchorCenter.getWorld(),
-                        anchorCenter,
-                        shipYaw,
+                        && canTransform(
                         anchorCenter,
                         desiredYaw
                 )) {
-                    currentTurn *= 0.25f;
-                } else {
                     shipYaw =
                             desiredYaw;
-
-                    if (wantsMove) {
-                        currentSpeed *= 0.20;
-                    }
+                } else if (wantsMove) {
+                    currentSpeed *= 0.20;
                 }
             }
         }
@@ -769,15 +760,11 @@ public class ActiveShip {
                         acceptedHelmLocation
                 );
 
-        if (!teleported && !teleportDiagnosticLogged) {
-            teleportDiagnosticLogged = true;
-
+        if (!teleported) {
             plugin.getLogger().warning(
                     "Не удалось телепортировать carrier корабля в "
                             + formatLocation(acceptedHelmLocation)
             );
-        } else if (teleported) {
-            teleportDiagnosticLogged = false;
         }
 
         Vector carrierVelocity =
@@ -1204,6 +1191,190 @@ public class ActiveShip {
         });
     }
 
+    private void restoreContainerInventories(
+            List<RestoreEntry> entries
+    ) {
+        for (RestoreEntry entry : entries) {
+            restoreContainerInventory(
+                    entry.block(),
+                    entry.items()
+            );
+        }
+
+        /*
+         * Дополнительные попытки нужны TileEntity, которые завершают
+         * инициализацию после установки блока.
+         */
+        if (!entries.isEmpty()) {
+            Bukkit.getScheduler().runTaskLater(
+                    plugin,
+                    () -> {
+                        for (RestoreEntry entry : entries) {
+                            restoreContainerInventory(
+                                    entry.block(),
+                                    entry.items()
+                            );
+                        }
+                    },
+                    1L
+            );
+
+            Bukkit.getScheduler().runTaskLater(
+                    plugin,
+                    () -> {
+                        for (RestoreEntry entry : entries) {
+                            restoreContainerInventory(
+                                    entry.block(),
+                                    entry.items()
+                            );
+                        }
+                    },
+                    5L
+            );
+        }
+    }
+
+    private void restoreContainerInventory(
+            Block block,
+            ItemStack[] items
+    ) {
+        if (block == null
+                || items == null
+                || !(block.getState() instanceof Container container)) {
+            return;
+        }
+
+        Inventory inventory =
+                container.getInventory();
+
+        inventory.clear();
+
+        for (int i = 0;
+             i < Math.min(
+                     items.length,
+                     inventory.getSize()
+             );
+             i++) {
+            ItemStack item = items[i];
+
+            if (item != null && !item.getType().isAir()) {
+                inventory.setItem(
+                        i,
+                        item.clone()
+                );
+            }
+        }
+
+        container.update(true, false);
+    }
+
+    private static ItemStack[] deepCopy(
+            Inventory inventory
+    ) {
+        ItemStack[] items =
+                new ItemStack[
+                        inventory.getSize()
+                ];
+
+        for (int i = 0;
+             i < items.length;
+             i++) {
+            ItemStack item =
+                    inventory.getItem(i);
+
+            if (item != null
+                    && !item.getType().isAir()) {
+                items[i] = item.clone();
+            }
+        }
+
+        return items;
+    }
+
+    private boolean canTransform(
+            Location target,
+            float yaw
+    ) {
+        World world =
+                target.getWorld();
+
+        if (world == null) {
+            return false;
+        }
+
+        double delta =
+                Math.toRadians(
+                        yaw - initialYaw
+                );
+
+        double cos = Math.cos(delta);
+        double sin = Math.sin(delta);
+
+        Set<BlockKey> checked =
+                new HashSet<>();
+
+        for (ShipBlockData data :
+                originalBlocks) {
+
+            double rotatedX =
+                    data.getLocalX() * cos
+                            - data.getLocalZ() * sin;
+
+            double rotatedZ =
+                    data.getLocalX() * sin
+                            + data.getLocalZ() * cos;
+
+            int x =
+                    floorToInt(
+                            target.getX()
+                                    + rotatedX
+                    );
+
+            int y =
+                    target.getBlockY()
+                            + data.getLocalY();
+
+            int z =
+                    floorToInt(
+                            target.getZ()
+                                    + rotatedZ
+                    );
+
+            if (y < world.getMinHeight()
+                    || y >= world.getMaxHeight()) {
+                return false;
+            }
+
+            BlockKey key =
+                    new BlockKey(
+                            x,
+                            y,
+                            z
+                    );
+
+            if (!checked.add(key)) {
+                continue;
+            }
+
+            Block worldBlock =
+                    world.getBlockAt(
+                            x,
+                            y,
+                            z
+                    );
+
+            /*
+             * Воздух и вода — свободная среда для корабля.
+             * Только настоящий solid-блок является препятствием.
+             */
+            if (worldBlock.getType().isSolid()) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     public void restoreBlocks() {
         stopInternal();
 
@@ -1286,10 +1457,17 @@ public class ActiveShip {
                     new RestoreEntry(
                             target,
                             restoredData,
-                            data.getStateSnapshot()
+                            data.getStateSnapshot(),
+                            data.getItems()
                     )
             );
         }
+
+        /*
+         * Убираем временное освещение ДО восстановления настоящих
+         * светящихся блоков.
+         */
+        clearLightBlocks();
 
         /*
          * Сначала физические блоки.
@@ -1340,6 +1518,8 @@ public class ActiveShip {
                 );
             }
         }
+
+        restoreContainerInventories(entries);
 
         /*
          * Игрок остается смотреть туда, куда смотрел до остановки.
@@ -1424,6 +1604,196 @@ public class ActiveShip {
         return top != Integer.MIN_VALUE
                 ? top + 1.0
                 : pilot.getLocation().getY();
+    }
+
+    private void updateLightBlocks() {
+        if (lightSources.isEmpty()
+                || anchorCenter == null
+                || anchorCenter.getWorld() == null) {
+            return;
+        }
+
+        double delta =
+                Math.toRadians(
+                        shipYaw - initialYaw
+                );
+
+        double cos = Math.cos(delta);
+        double sin = Math.sin(delta);
+
+        Map<BlockKey, Integer> desired =
+                new HashMap<>();
+
+        for (LightSource source : lightSources) {
+            int x = floorToInt(
+                    anchorCenter.getX()
+                            + source.localX() * cos
+                            - source.localZ() * sin
+            );
+
+            int y =
+                    anchorCenter.getBlockY()
+                            + source.localY();
+
+            int z = floorToInt(
+                    anchorCenter.getZ()
+                            + source.localX() * sin
+                            + source.localZ() * cos
+            );
+
+            desired.merge(
+                    new BlockKey(x, y, z),
+                    source.level(),
+                    Math::max
+            );
+        }
+
+        for (BlockKey old :
+                new HashSet<>(
+                        activeLightCells.keySet()
+                )) {
+            if (desired.containsKey(old)) {
+                continue;
+            }
+
+            Block block =
+                    anchorCenter.getWorld().getBlockAt(
+                            old.x(),
+                            old.y(),
+                            old.z()
+                    );
+
+            if (block.getType() == Material.LIGHT) {
+                BlockData previous =
+                        activeLightCells.get(old);
+
+                if (previous != null) {
+                    block.setBlockData(
+                            previous.clone(),
+                            false
+                    );
+                }
+            }
+
+            activeLightCells.remove(old);
+        }
+
+        for (Map.Entry<BlockKey, Integer> entry :
+                desired.entrySet()) {
+
+            BlockKey key = entry.getKey();
+
+            if (activeLightCells.containsKey(key)) {
+                Block existing =
+                        anchorCenter.getWorld().getBlockAt(
+                                key.x(),
+                                key.y(),
+                                key.z()
+                        );
+
+                if (existing.getType() == Material.LIGHT) {
+                    org.bukkit.block.data.type.Light light =
+                            (org.bukkit.block.data.type.Light)
+                                    existing.getBlockData().clone();
+
+                    int level =
+                            Math.max(
+                                    1,
+                                    Math.min(
+                                            15,
+                                            entry.getValue()
+                                    )
+                            );
+
+                    if (light.getLevel() != level) {
+                        light.setLevel(level);
+                        existing.setBlockData(light, false);
+                    }
+                }
+
+                continue;
+            }
+
+            Block block =
+                    anchorCenter.getWorld().getBlockAt(
+                            key.x(),
+                            key.y(),
+                            key.z()
+                    );
+
+            Material previous =
+                    block.getType();
+
+            /*
+             * Не трогаем реальные блоки среды. Световой маркер может занять
+             * только воздух или воду; физическая collision-модель сама
+             * отвечает за твердые препятствия.
+             */
+            if (!previous.isAir()
+                    && previous != Material.WATER
+                    && previous != Material.BUBBLE_COLUMN) {
+                continue;
+            }
+
+            activeLightCells.put(
+                    key,
+                    block.getBlockData().clone()
+            );
+
+            org.bukkit.block.data.type.Light light =
+                    (org.bukkit.block.data.type.Light)
+                            Material.LIGHT.createBlockData();
+
+            light.setLevel(
+                    Math.max(
+                            1,
+                            Math.min(
+                                    15,
+                                    entry.getValue()
+                            )
+                    )
+            );
+
+            light.setWaterlogged(
+                    previous == Material.WATER
+                            || previous == Material.BUBBLE_COLUMN
+            );
+
+            block.setBlockData(
+                    light,
+                    false
+            );
+        }
+    }
+
+    private void clearLightBlocks() {
+        if (activeLightCells.isEmpty()
+                || anchorCenter == null
+                || anchorCenter.getWorld() == null) {
+            return;
+        }
+
+        for (Map.Entry<BlockKey, BlockData> entry :
+                new HashMap<>(activeLightCells).entrySet()) {
+
+            BlockKey key = entry.getKey();
+
+            Block block =
+                    anchorCenter.getWorld().getBlockAt(
+                            key.x(),
+                            key.y(),
+                            key.z()
+                    );
+
+            if (block.getType() == Material.LIGHT) {
+                block.setBlockData(
+                        entry.getValue().clone(),
+                        false
+                );
+            }
+        }
+
+        activeLightCells.clear();
     }
 
     private void stopInternal() {
@@ -1621,10 +1991,26 @@ public class ActiveShip {
         return pilot;
     }
 
+    private record LightSource(
+            int localX,
+            int localY,
+            int localZ,
+            int level
+    ) {
+    }
+
+    private record BlockKey(
+            int x,
+            int y,
+            int z
+    ) {
+    }
+
     private record RestoreEntry(
             Block block,
             BlockData blockData,
-            BlockState snapshot
+            BlockState snapshot,
+            ItemStack[] items
     ) {
     }
 }
